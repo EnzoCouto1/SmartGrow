@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS leituras (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     temperatura REAL NOT NULL,
     umidade REAL NOT NULL,
+    luminosidade REAL NOT NULL,
     horario TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """)

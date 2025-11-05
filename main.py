@@ -8,7 +8,7 @@ import datetime
 from fuzzy_logic import (
     calcular_nivel_irrigacao, 
     calcular_velocidade_ventilacao,
-    calcular_nivel_iluminacao  # <-- NOVO IMPORT
+    calcular_nivel_iluminacao  
 )
 
 DATABASE_NAME = "leituras.db"
@@ -28,7 +28,7 @@ app = FastAPI(
 estado_sistema = {
     "nivel_irrigacao": 0.0,
     "velocidade_ventilacao": 0.0,
-    "nivel_iluminacao": 0.0  # <-- NOVO CONTROLE
+    "nivel_iluminacao": 0.0  
 }
 
 @app.get("/")
@@ -65,13 +65,17 @@ def registrar_leitura(leitura: LeituraSensor):
     print(f"[{datetime.datetime.now()}] Leitura: Temp={leitura.temperatura_celsius}°C, Umidade={leitura.umidade_solo}%, Lum={leitura.luminosidade}%")
     print(f"  -> DECISÃO FUZZY: Irrigação={nivel_irrigacao_calculado:.2f}%, Ventilação={velocidade_ventilacao_calculada:.2f}%, Iluminação={nivel_iluminacao_calculado:.2f}%")
 
-    # Salva no banco de dados
-    # ATENÇÃO: O banco de dados NÃO salvará a luminosidade
-    # (Podemos adicionar isso depois se for necessário, mas por enquanto funciona)
+
     try:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO leituras (temperatura, umidade) VALUES (?, ?)", (leitura.temperatura_celsius, leitura.umidade_solo, leitura.luminosidade))
+        cursor.execute(
+        # 1. Adiciona "luminosidade" à lista de colunas
+        # 2. Adiciona um terceiro "?" para o terceiro valor
+         "INSERT INTO leituras (temperatura, umidade, luminosidade) VALUES (?, ?, ?)", 
+
+        # Agora o SQL (3 colunas) bate com os dados (3 valores)
+        (leitura.temperatura_celsius, leitura.umidade_solo, leitura.luminosidade))        
         conn.commit()
         conn.close()
         return {"status": "sucesso", "mensagem": "Leitura processada com lógica fuzzy.", "estado_atual": estado_sistema}
