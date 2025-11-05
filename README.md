@@ -27,10 +27,8 @@ Siga estes passos para configurar e executar o backend no seu computador.
 
 1.  **Clone o repositório:**
     ```bash
-    git clone [https://github.com/EnzoCouto1/SmartGrow.git](https://github.com/EnzoCouto1/SmartGrow.git)
-    cd SmartGrow/SmartGrow 
+    git clone https://github.com/EnzoCouto1/SmartGrow
     ```
-    *(Nota: Pode ser necessário navegar para a subpasta `SmartGrow/SmartGrow` onde os arquivos .py estão)*
 
 2.  **Crie e ative um ambiente virtual:**
     ```bash
