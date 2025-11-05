@@ -17,7 +17,7 @@ DATABASE_NAME = "leituras.db"
 class LeituraSensor(BaseModel):
     temperatura_celsius: float
     umidade_solo: float
-    luminosidade: float  # <-- CAMPO OBRIGATÓRIO
+    luminosidade: float 
 
 app = FastAPI(
     title="API da Estufa Inteligente com Lógica Fuzzy",
@@ -71,7 +71,7 @@ def registrar_leitura(leitura: LeituraSensor):
     try:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
-        cursor.execute("INSERT INTO leituras (temperatura, umidade) VALUES (?, ?)", (leitura.temperatura_celsius, leitura.umidade_solo))
+        cursor.execute("INSERT INTO leituras (temperatura, umidade) VALUES (?, ?)", (leitura.temperatura_celsius, leitura.umidade_solo, leitura.luminosidade))
         conn.commit()
         conn.close()
         return {"status": "sucesso", "mensagem": "Leitura processada com lógica fuzzy.", "estado_atual": estado_sistema}
