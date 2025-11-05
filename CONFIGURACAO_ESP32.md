@@ -25,6 +25,7 @@ Instale estas bibliotecas no Arduino IDE (Tools → Manage Libraries):
 - 5x Módulos de relé
 - Jumpers e protoboard
 - Fonte de alimentação 5V/12V para os relés
+- Sensor de luminosidade
 
 ## Configuração do Código
 
@@ -73,6 +74,13 @@ HC-SR04 VCC  → ESP32 5V
 HC-SR04 GND  → ESP32 GND
 HC-SR04 TRIG → ESP32 GPIO5
 HC-SR04 ECHO → ESP32 GPIO4
+```
+
+### **Sensor de Luminosidade (LDR):**
+```
+Sensor VCC → ESP32 3.3V
+Sensor GND → ESP32 GND 
+Sensor AOUT → ESP32 GPIO32
 ```
 
 ### **Módulos de Relé:**

@@ -1,17 +1,10 @@
 /*
- * SmartGrow ESP32 - Código para Estufa Inteligente
- * Envia dados dos sensores para API FastAPI
- * 
- * Pinagem conforme diagrama:
- * - GPIO34: Sensor de umidade do solo (AOUT)
- * - GPIO23: Sensor DHT22 (DATA) - temperatura e umidade do ar
- * - GPIO5: Sensor ultrassônico (TRIG)
- * - GPIO4: Sensor ultrassônico (ECHO)
- * - GPIO26: Relé bomba de água
- * - GPIO27: Relé iluminação
- * - GPIO14: Relé exaustor/ventilação
- * - GPIO12: Relé aquecedor
- * - GPIO13: Relé umidificador
+ * SmartGrow ESP32 - Código para Estufa Inteligente v1.1
+ * Envia dados dos sensores para API FastAPI com Lógica Fuzzy
+ * * --- ATUALIZADO ---
+ * - Adicionado Sensor de Luminosidade (LDR)
+ * - Envia 3 valores (temp, umidade, lum) para a API
+ * - Recebe e atua em 3 comandos (irrigação, ventilação, iluminação)
  */
 
 #include <WiFi.h>
@@ -34,6 +27,7 @@ const char* api_url = "http://SEU_IP:8000";   // IP do computador com a API
 #define SOIL_MOISTURE_PIN 34          // GPIO34 - Sensor umidade solo
 #define ULTRASONIC_TRIG_PIN 5         // GPIO5 - Sensor ultrassônico TRIG
 #define ULTRASONIC_ECHO_PIN 4         // GPIO4 - Sensor ultrassônico ECHO
+#define LDR_PIN 32                    // --- NOVO --- GPIO32 (Pino ADC1)
 
 // =============================================================================
 // CONFIGURAÇÕES DOS ATUADORES (RELÉS)
@@ -50,18 +44,20 @@ const char* api_url = "http://SEU_IP:8000";   // IP do computador com a API
 DHT dht(DHT_PIN, DHT_TYPE);
 unsigned long lastSensorRead = 0;
 unsigned long lastApiCall = 0;
-const unsigned long SENSOR_INTERVAL = 5000;    // Lê sensores a cada 5 segundos
-const unsigned long API_INTERVAL = 30000;      // Envia para API a cada 30 segundos
+const unsigned long SENSOR_INTERVAL = 5000; // Lê sensores a cada 5 segundos
+const unsigned long API_INTERVAL = 30000;   // Envia para API a cada 30 segundos
 
 // Variáveis para armazenar leituras
 float temperatura = 0.0;
 float umidade_ar = 0.0;
 float umidade_solo = 0.0;
 float distancia_agua = 0.0;
+float luminosidade = 0.0;           // --- NOVO ---
 
 // Estado dos atuadores (recebido da API)
 float nivel_irrigacao = 0.0;
 float velocidade_ventilacao = 0.0;
+float nivel_iluminacao = 0.0;       // --- NOVO ---
 
 // =============================================================================
 // FUNÇÕES DE LEITURA DOS SENSORES
@@ -86,36 +82,32 @@ float lerUmidadeAr() {
 }
 
 float lerUmidadeSolo() {
-  // Lê o valor analógico (0-4095 para ESP32)
   int valor_analogico = analogRead(SOIL_MOISTURE_PIN);
-  
-  // Converte para porcentagem (0-100%)
-  // Valores típicos: 0-3000 = seco, 3000-4095 = úmido
-  float umidade = map(valor_analogico, 0, 4095, 100, 0);
-  
-  // Limita entre 0 e 100
+  float umidade = map(valor_analogico, 0, 4095, 100, 0); // Invertido: 0 (seco) -> 100%
   umidade = constrain(umidade, 0, 100);
-  
   return umidade;
 }
 
 float lerDistanciaAgua() {
-  // Limpa o pino TRIG
   digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
   delayMicroseconds(2);
-  
-  // Envia pulso de 10us no TRIG
   digitalWrite(ULTRASONIC_TRIG_PIN, HIGH);
   delayMicroseconds(10);
   digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
-  
-  // Lê o tempo de resposta do ECHO
   long duracao = pulseIn(ULTRASONIC_ECHO_PIN, HIGH);
-  
-  // Calcula a distância (velocidade do som = 343 m/s)
   float distancia = (duracao * 0.0343) / 2;
-  
   return distancia;
+}
+
+// --- NOVA FUNÇÃO ---
+float lerLuminosidade() {
+  // Lê o LDR (0-4095). 
+  // Assumimos que 4095 é escuro total e 0 é luz máxima (depende do seu circuito LDR)
+  int valor_analogico_ldr = analogRead(LDR_PIN);
+  // Converte para porcentagem (0% escuro, 100% claro)
+  float lum_percent = map(valor_analogico_ldr, 4095, 0, 0, 100);
+  lum_percent = constrain(lum_percent, 0, 100);
+  return lum_percent;
 }
 
 // =============================================================================
@@ -131,11 +123,12 @@ void enviarDadosParaAPI() {
   HTTPClient http;
   http.begin(String(api_url) + "/leituras");
   http.addHeader("Content-Type", "application/json");
-  
-  // Cria o JSON com os dados dos sensores
+
+  // --- ATUALIZADO --- Cria o JSON com os 3 dados
   DynamicJsonDocument doc(1024);
   doc["temperatura_celsius"] = temperatura;
   doc["umidade_solo"] = umidade_solo;
+  doc["luminosidade"] = luminosidade; // <-- DADO ADICIONADO
   
   String jsonString;
   serializeJson(doc, jsonString);
@@ -148,19 +141,21 @@ void enviarDadosParaAPI() {
   if (httpResponseCode > 0) {
     String response = http.getString();
     Serial.println("Resposta da API: " + response);
-    
-    // Parse da resposta para obter comandos dos atuadores
+
+    // --- ATUALIZADO --- Parse da resposta para obter os 3 comandos
     DynamicJsonDocument responseDoc(1024);
     deserializeJson(responseDoc, response);
     
     if (responseDoc.containsKey("estado_atual")) {
       nivel_irrigacao = responseDoc["estado_atual"]["nivel_irrigacao"];
       velocidade_ventilacao = responseDoc["estado_atual"]["velocidade_ventilacao"];
+      nivel_iluminacao = responseDoc["estado_atual"]["nivel_iluminacao"]; // <-- COMANDO ADICIONADO
       
       Serial.println("Comandos recebidos:");
       Serial.println("  Irrigação: " + String(nivel_irrigacao) + "%");
       Serial.println("  Ventilação: " + String(velocidade_ventilacao) + "%");
-      
+      Serial.println("  Iluminação: " + String(nivel_iluminacao) + "%"); // <-- LOG ADICIONADO
+
       // Atualiza os atuadores
       controlarAtuadores();
     }
@@ -188,8 +183,10 @@ void obterStatusSistema() {
     DynamicJsonDocument doc(1024);
     deserializeJson(doc, response);
     
+    // --- ATUALIZADO --- Obtém os 3 comandos
     nivel_irrigacao = doc["nivel_irrigacao"];
     velocidade_ventilacao = doc["velocidade_ventilacao"];
+    nivel_iluminacao = doc["nivel_iluminacao"]; // <-- COMANDO ADICIONADO
     
     controlarAtuadores();
   }
@@ -202,39 +199,40 @@ void obterStatusSistema() {
 // =============================================================================
 
 void controlarAtuadores() {
+  
   // Controla bomba de água (irrigação)
-  if (nivel_irrigacao > 50) {
-    digitalWrite(PUMP_RELAY_PIN, HIGH);  // Liga bomba
+  // Lógica de exemplo: liga o relé se a API disser mais de 50%
+  if (nivel_irrigacao > 50.0) {
+    digitalWrite(PUMP_RELAY_PIN, HIGH); // Liga bomba
     Serial.println("Bomba de água: LIGADA");
   } else {
-    digitalWrite(PUMP_RELAY_PIN, LOW);   // Desliga bomba
+    digitalWrite(PUMP_RELAY_PIN, LOW); // Desliga bomba
     Serial.println("Bomba de água: DESLIGADA");
   }
   
   // Controla ventilação/exaustor
-  if (velocidade_ventilacao > 50) {
-    digitalWrite(FAN_RELAY_PIN, HIGH);   // Liga ventilação
+  if (velocidade_ventilacao > 50.0) {
+    digitalWrite(FAN_RELAY_PIN, HIGH); // Liga ventilação
     Serial.println("Ventilação: LIGADA");
   } else {
-    digitalWrite(FAN_RELAY_PIN, LOW);    // Desliga ventilação
+    digitalWrite(FAN_RELAY_PIN, LOW); // Desliga ventilação
     Serial.println("Ventilação: DESLIGADA");
   }
   
-  // Controle adicional baseado em temperatura
-  if (temperatura > 30) {
-    digitalWrite(HEATER_RELAY_PIN, LOW);     // Desliga aquecedor
-    digitalWrite(FAN_RELAY_PIN, HIGH);       // Liga ventilação
-  } else if (temperatura < 15) {
-    digitalWrite(HEATER_RELAY_PIN, HIGH);    // Liga aquecedor
-    digitalWrite(FAN_RELAY_PIN, LOW);        // Desliga ventilação
+  // --- NOVA LÓGICA DE ILUMINAÇÃO ---
+  if (nivel_iluminacao > 50.0) {
+    digitalWrite(LIGHT_RELAY_PIN, HIGH); // Liga luz
+    Serial.println("Iluminação: LIGADA");
+  } else {
+    digitalWrite(LIGHT_RELAY_PIN, LOW); // Desliga luz
+    Serial.println("Iluminação: DESLIGADA");
   }
-  
-  // Controle de umidade do ar
-  if (umidade_ar < 40) {
-    digitalWrite(HUMIDIFIER_RELAY_PIN, HIGH); // Liga umidificador
-  } else if (umidade_ar > 70) {
-    digitalWrite(HUMIDIFIER_RELAY_PIN, LOW);  // Desliga umidificador
-  }
+
+  /* * NOTA: A lógica original de controle de Aquecedor e Umidificador  foi removida
+   * pois ela era local do ESP32 e não usava a API Fuzzy. 
+   * O backend atualmente não controla "aquecedor" ou "umidificador".
+   * Se precisar deles, teríamos que adicionar ao backend.
+   */
 }
 
 // =============================================================================
@@ -245,7 +243,7 @@ void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("🌱 SmartGrow ESP32 - Iniciando...");
+  Serial.println("🌱 SmartGrow ESP32 v1.1 - Iniciando...");
   
   // Configura pinos dos relés como saída
   pinMode(PUMP_RELAY_PIN, OUTPUT);
@@ -257,6 +255,9 @@ void setup() {
   // Configura pinos do sensor ultrassônico
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
+
+  // Configura pino do LDR como entrada (embora analogRead defina automaticamente)
+  pinMode(LDR_PIN, INPUT); 
   
   // Inicializa todos os relés desligados
   digitalWrite(PUMP_RELAY_PIN, LOW);
@@ -281,18 +282,20 @@ void setup() {
   Serial.println("WiFi conectado!");
   Serial.println("IP: " + WiFi.localIP().toString());
   Serial.println("API URL: " + String(api_url));
-  
+
   // Teste inicial dos sensores
   Serial.println("\n🔍 Testando sensores...");
   temperatura = lerTemperatura();
   umidade_ar = lerUmidadeAr();
   umidade_solo = lerUmidadeSolo();
   distancia_agua = lerDistanciaAgua();
+  luminosidade = lerLuminosidade(); // <-- NOVO
   
   Serial.println("Leituras iniciais:");
   Serial.println("  Temperatura: " + String(temperatura) + "°C");
   Serial.println("  Umidade do ar: " + String(umidade_ar) + "%");
   Serial.println("  Umidade do solo: " + String(umidade_solo) + "%");
+  Serial.println("  Luminosidade: " + String(luminosidade) + "%"); // <-- NOVO
   Serial.println("  Distância da água: " + String(distancia_agua) + " cm");
   
   Serial.println("\n✅ Sistema iniciado com sucesso!");
@@ -311,11 +314,13 @@ void loop() {
     umidade_ar = lerUmidadeAr();
     umidade_solo = lerUmidadeSolo();
     distancia_agua = lerDistanciaAgua();
+    luminosidade = lerLuminosidade(); // <-- NOVO
     
     Serial.println("\n📊 Leituras dos sensores:");
     Serial.println("  Temperatura: " + String(temperatura) + "°C");
     Serial.println("  Umidade do ar: " + String(umidade_ar) + "%");
     Serial.println("  Umidade do solo: " + String(umidade_solo) + "%");
+    Serial.println("  Luminosidade: " + String(luminosidade) + "%"); // <-- NOVO
     Serial.println("  Distância da água: " + String(distancia_agua) + " cm");
     
     lastSensorRead = currentTime;
@@ -327,10 +332,11 @@ void loop() {
     lastApiCall = currentTime;
   }
   
-  // Verifica status do sistema periodicamente
-  if (currentTime % 60000 == 0) { // A cada 1 minuto
-    obterStatusSistema();
-  }
-  
+  /* * A função obterStatusSistema() foi removida do loop 
+   * para evitar chamadas duplicadas, já que a função 
+   * enviarDadosParaAPI() já obtém o status mais recente 
+   * como resposta ao POST.
+   */
+   
   delay(100); // Pequena pausa para estabilidade
 }
