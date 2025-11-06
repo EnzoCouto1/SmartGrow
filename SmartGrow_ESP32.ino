@@ -1,10 +1,17 @@
 /*
- * SmartGrow ESP32 - Código para Estufa Inteligente v1.1
- * Envia dados dos sensores para API FastAPI com Lógica Fuzzy
- * * --- ATUALIZADO ---
- * - Adicionado Sensor de Luminosidade (LDR)
- * - Envia 3 valores (temp, umidade, lum) para a API
- * - Recebe e atua em 3 comandos (irrigação, ventilação, iluminação)
+ * SmartGrow ESP32 - Código para Estufa Inteligente v1.3
+ * Lógica de Controlo Proporcional ao Tempo (Ciclo de 1 minuto)
+ * * Pinagem principal:
+ * - GPIO34: Sensor umidade solo (AOUT)
+ * - GPIO32: Sensor luminosidade (LDR AOUT)
+ * - GPIO23: Sensor DHT22 (DATA) - temp/umidade ar
+ * - GPIO5: Sensor ultrassônico (TRIG)
+ * - GPIO4: Sensor ultrassônico (ECHO)
+ * - GPIO26: Relé bomba de água
+ * - GPIO27: Relé iluminação
+ * - GPIO14: Relé exaustor/ventilação
+ * - GPIO12: Relé aquecedor
+ * - GPIO13: Relé umidificador
  */
 
 #include <WiFi.h>
@@ -27,7 +34,7 @@ const char* api_url = "http://SEU_IP:8000";   // IP do computador com a API
 #define SOIL_MOISTURE_PIN 34          // GPIO34 - Sensor umidade solo
 #define ULTRASONIC_TRIG_PIN 5         // GPIO5 - Sensor ultrassônico TRIG
 #define ULTRASONIC_ECHO_PIN 4         // GPIO4 - Sensor ultrassônico ECHO
-#define LDR_PIN 32                    // --- NOVO --- GPIO32 (Pino ADC1)
+#define LDR_PIN 32                    // GPIO32 (Pino ADC1)
 
 // =============================================================================
 // CONFIGURAÇÕES DOS ATUADORES (RELÉS)
@@ -37,6 +44,17 @@ const char* api_url = "http://SEU_IP:8000";   // IP do computador com a API
 #define FAN_RELAY_PIN 14              // GPIO14 - Exaustor/ventilação
 #define HEATER_RELAY_PIN 12           // GPIO12 - Aquecedor
 #define HUMIDIFIER_RELAY_PIN 13       // GPIO13 - Umidificador
+
+// =============================================================================
+// CONFIGURAÇÕES DO CICLO DE CONTROLO
+// =============================================================================
+// Define o ciclo de controlo em milissegundos
+const unsigned long CONTROL_CYCLE_MS = 60000; // 1 minuto (60,000 ms)
+unsigned long cycleStartTime = 0;
+// Variáveis para guardar o estado atual (ligado/desligado) para os logs
+bool pumpState = false;
+bool fanState = false;
+bool lightState = false;
 
 // =============================================================================
 // VARIÁVEIS GLOBAIS
@@ -52,12 +70,12 @@ float temperatura = 0.0;
 float umidade_ar = 0.0;
 float umidade_solo = 0.0;
 float distancia_agua = 0.0;
-float luminosidade = 0.0;           // --- NOVO ---
+float luminosidade = 0.0;
 
 // Estado dos atuadores (recebido da API)
 float nivel_irrigacao = 0.0;
 float velocidade_ventilacao = 0.0;
-float nivel_iluminacao = 0.0;       // --- NOVO ---
+float nivel_iluminacao = 0.0;
 
 // =============================================================================
 // FUNÇÕES DE LEITURA DOS SENSORES
@@ -99,13 +117,9 @@ float lerDistanciaAgua() {
   return distancia;
 }
 
-// --- NOVA FUNÇÃO ---
 float lerLuminosidade() {
-  // Lê o LDR (0-4095). 
-  // Assumimos que 4095 é escuro total e 0 é luz máxima (depende do seu circuito LDR)
   int valor_analogico_ldr = analogRead(LDR_PIN);
-  // Converte para porcentagem (0% escuro, 100% claro)
-  float lum_percent = map(valor_analogico_ldr, 4095, 0, 0, 100);
+  float lum_percent = map(valor_analogico_ldr, 4095, 0, 0, 100); // Converte 4095(escuro) -> 0%
   lum_percent = constrain(lum_percent, 0, 100);
   return lum_percent;
 }
@@ -124,11 +138,10 @@ void enviarDadosParaAPI() {
   http.begin(String(api_url) + "/leituras");
   http.addHeader("Content-Type", "application/json");
 
-  // --- ATUALIZADO --- Cria o JSON com os 3 dados
   DynamicJsonDocument doc(1024);
   doc["temperatura_celsius"] = temperatura;
   doc["umidade_solo"] = umidade_solo;
-  doc["luminosidade"] = luminosidade; // <-- DADO ADICIONADO
+  doc["luminosidade"] = luminosidade;
   
   String jsonString;
   serializeJson(doc, jsonString);
@@ -142,22 +155,18 @@ void enviarDadosParaAPI() {
     String response = http.getString();
     Serial.println("Resposta da API: " + response);
 
-    // --- ATUALIZADO --- Parse da resposta para obter os 3 comandos
     DynamicJsonDocument responseDoc(1024);
     deserializeJson(responseDoc, response);
     
     if (responseDoc.containsKey("estado_atual")) {
       nivel_irrigacao = responseDoc["estado_atual"]["nivel_irrigacao"];
       velocidade_ventilacao = responseDoc["estado_atual"]["velocidade_ventilacao"];
-      nivel_iluminacao = responseDoc["estado_atual"]["nivel_iluminacao"]; // <-- COMANDO ADICIONADO
+      nivel_iluminacao = responseDoc["estado_atual"]["nivel_iluminacao"];
       
-      Serial.println("Comandos recebidos:");
+      Serial.println("Comandos recebidos e atualizados:");
       Serial.println("  Irrigação: " + String(nivel_irrigacao) + "%");
       Serial.println("  Ventilação: " + String(velocidade_ventilacao) + "%");
-      Serial.println("  Iluminação: " + String(nivel_iluminacao) + "%"); // <-- LOG ADICIONADO
-
-      // Atualiza os atuadores
-      controlarAtuadores();
+      Serial.println("  Iluminação: " + String(nivel_iluminacao) + "%");
     }
   } else {
     Serial.println("Erro na comunicação: " + String(httpResponseCode));
@@ -173,77 +182,94 @@ void obterStatusSistema() {
   
   HTTPClient http;
   http.begin(String(api_url) + "/status_sistema");
-  
   int httpResponseCode = http.GET();
   
   if (httpResponseCode > 0) {
     String response = http.getString();
     Serial.println("Status do sistema: " + response);
-    
     DynamicJsonDocument doc(1024);
     deserializeJson(doc, response);
     
-    // --- ATUALIZADO --- Obtém os 3 comandos
     nivel_irrigacao = doc["nivel_irrigacao"];
     velocidade_ventilacao = doc["velocidade_ventilacao"];
-    nivel_iluminacao = doc["nivel_iluminacao"]; // <-- COMANDO ADICIONADO
-    
-    controlarAtuadores();
+    nivel_iluminacao = doc["nivel_iluminacao"];
   }
-  
   http.end();
 }
 
 // =============================================================================
-// FUNÇÕES DE CONTROLE DOS ATUADORES
+// FUNÇÃO DE CONTROLO PROPORCIONAL AO TEMPO
 // =============================================================================
 
-void controlarAtuadores() {
-  
-  // Controla bomba de água (irrigação)
-  // Lógica de exemplo: liga o relé se a API disser mais de 50%
-  if (nivel_irrigacao > 50.0) {
-    digitalWrite(PUMP_RELAY_PIN, HIGH); // Liga bomba
-    Serial.println("Bomba de água: LIGADA");
-  } else {
-    digitalWrite(PUMP_RELAY_PIN, LOW); // Desliga bomba
-    Serial.println("Bomba de água: DESLIGADA");
-  }
-  
-  // Controla ventilação/exaustor
-  if (velocidade_ventilacao > 50.0) {
-    digitalWrite(FAN_RELAY_PIN, HIGH); // Liga ventilação
-    Serial.println("Ventilação: LIGADA");
-  } else {
-    digitalWrite(FAN_RELAY_PIN, LOW); // Desliga ventilação
-    Serial.println("Ventilação: DESLIGADA");
-  }
-  
-  // --- NOVA LÓGICA DE ILUMINAÇÃO ---
-  if (nivel_iluminacao > 50.0) {
-    digitalWrite(LIGHT_RELAY_PIN, HIGH); // Liga luz
-    Serial.println("Iluminação: LIGADA");
-  } else {
-    digitalWrite(LIGHT_RELAY_PIN, LOW); // Desliga luz
-    Serial.println("Iluminação: DESLIGADA");
-  }
+void gerenciarAtuadores(unsigned long currentTime) {
+    // Verifica se o ciclo de 1 minuto reiniciou
+    if (currentTime - cycleStartTime >= CONTROL_CYCLE_MS) {
+        cycleStartTime = currentTime; // Reinicia o ciclo
+    }
 
-  /* * NOTA: A lógica original de controle de Aquecedor e Umidificador  foi removida
-   * pois ela era local do ESP32 e não usava a API Fuzzy. 
-   * O backend atualmente não controla "aquecedor" ou "umidificador".
-   * Se precisar deles, teríamos que adicionar ao backend.
-   */
+    // Pega o tempo que já passou no ciclo atual
+    unsigned long elapsedTimeInCycle = currentTime - cycleStartTime;
+
+    // Calcula por quanto tempo cada atuador deve ficar ligado *neste* ciclo
+    unsigned long pumpOnDuration = (CONTROL_CYCLE_MS * (nivel_irrigacao / 100.0));
+    unsigned long fanOnDuration = (CONTROL_CYCLE_MS * (velocidade_ventilacao / 100.0));
+    unsigned long lightOnDuration = (CONTROL_CYCLE_MS * (nivel_iluminacao / 100.0));
+
+    // --- Lógica da Bomba ---
+    if (elapsedTimeInCycle < pumpOnDuration) {
+        if (!pumpState) { // Só imprime a mudança de estado
+            Serial.println("Decisão de Controlo: LIGANDO Bomba");
+            pumpState = true;
+        }
+        digitalWrite(PUMP_RELAY_PIN, HIGH);
+    } else {
+        if (pumpState) {
+            Serial.println("Decisão de Controlo: DESLIGANDO Bomba");
+            pumpState = false;
+        }
+        digitalWrite(PUMP_RELAY_PIN, LOW);
+    }
+
+    // --- Lógica da Ventoinha ---
+    if (elapsedTimeInCycle < fanOnDuration) {
+        if (!fanState) {
+            Serial.println("Decisão de Controlo: LIGANDO Ventilação");
+            fanState = true;
+        }
+        digitalWrite(FAN_RELAY_PIN, HIGH);
+    } else {
+        if (fanState) {
+            Serial.println("Decisão de Controlo: DESLIGANDO Ventilação");
+            fanState = false;
+        }
+        digitalWrite(FAN_RELAY_PIN, LOW);
+    }
+
+    // --- Lógica da Iluminação ---
+    if (elapsedTimeInCycle < lightOnDuration) {
+        if (!lightState) {
+            Serial.println("Decisão de Controlo: LIGANDO Iluminação");
+            lightState = true;
+        }
+        digitalWrite(LIGHT_RELAY_PIN, HIGH);
+    } else {
+        if (lightState) {
+            Serial.println("Decisão de Controlo: DESLIGANDO Iluminação");
+            lightState = false;
+        }
+        digitalWrite(LIGHT_RELAY_PIN, LOW);
+    }
 }
 
 // =============================================================================
-// CONFIGURAÇÃO INICIAL
+// CONFIGURAÇÃO INICIAL (Setup)
 // =============================================================================
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("🌱 SmartGrow ESP32 v1.1 - Iniciando...");
+  Serial.println("🌱 SmartGrow ESP32 v1.3 (Ciclo 1 min) - Iniciando...");
   
   // Configura pinos dos relés como saída
   pinMode(PUMP_RELAY_PIN, OUTPUT);
@@ -256,7 +282,7 @@ void setup() {
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
 
-  // Configura pino do LDR como entrada (embora analogRead defina automaticamente)
+  // Configura pino do LDR
   pinMode(LDR_PIN, INPUT); 
   
   // Inicializa todos os relés desligados
@@ -289,14 +315,17 @@ void setup() {
   umidade_ar = lerUmidadeAr();
   umidade_solo = lerUmidadeSolo();
   distancia_agua = lerDistanciaAgua();
-  luminosidade = lerLuminosidade(); // <-- NOVO
+  luminosidade = lerLuminosidade();
   
   Serial.println("Leituras iniciais:");
   Serial.println("  Temperatura: " + String(temperatura) + "°C");
   Serial.println("  Umidade do ar: " + String(umidade_ar) + "%");
   Serial.println("  Umidade do solo: " + String(umidade_solo) + "%");
-  Serial.println("  Luminosidade: " + String(luminosidade) + "%"); // <-- NOVO
+  Serial.println("  Luminosidade: " + String(luminosidade) + "%");
   Serial.println("  Distância da água: " + String(distancia_agua) + " cm");
+  
+  // Inicia o ciclo de controlo
+  cycleStartTime = millis();
   
   Serial.println("\n✅ Sistema iniciado com sucesso!");
 }
@@ -308,35 +337,32 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
   
-  // Lê sensores a cada intervalo definido
+  // --- TAREFA 1: LER SENSORES (a cada 5 seg) ---
   if (currentTime - lastSensorRead >= SENSOR_INTERVAL) {
     temperatura = lerTemperatura();
     umidade_ar = lerUmidadeAr();
     umidade_solo = lerUmidadeSolo();
     distancia_agua = lerDistanciaAgua();
-    luminosidade = lerLuminosidade(); // <-- NOVO
+    luminosidade = lerLuminosidade();
     
     Serial.println("\n📊 Leituras dos sensores:");
     Serial.println("  Temperatura: " + String(temperatura) + "°C");
     Serial.println("  Umidade do ar: " + String(umidade_ar) + "%");
     Serial.println("  Umidade do solo: " + String(umidade_solo) + "%");
-    Serial.println("  Luminosidade: " + String(luminosidade) + "%"); // <-- NOVO
+    Serial.println("  Luminosidade: " + String(luminosidade) + "%");
     Serial.println("  Distância da água: " + String(distancia_agua) + " cm");
     
     lastSensorRead = currentTime;
   }
   
-  // Envia dados para API a cada intervalo definido
+  // --- TAREFA 2: FALAR COM A API (a cada 30 seg) ---
   if (currentTime - lastApiCall >= API_INTERVAL) {
-    enviarDadosParaAPI();
+    enviarDadosParaAPI(); // Envia dados e recebe novos comandos
     lastApiCall = currentTime;
   }
   
-  /* * A função obterStatusSistema() foi removida do loop 
-   * para evitar chamadas duplicadas, já que a função 
-   * enviarDadosParaAPI() já obtém o status mais recente 
-   * como resposta ao POST.
-   */
+  // --- TAREFA 3: CONTROLAR OS ATUADORES (constantemente) ---
+  gerenciarAtuadores(currentTime);
    
-  delay(100); // Pequena pausa para estabilidade
+  delay(10); // Pequena pausa para estabilidade
 }
