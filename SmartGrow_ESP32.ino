@@ -49,7 +49,7 @@ const char* api_url = "http://SEU_IP:8000";   // IP do computador com a API
 // CONFIGURAÇÕES DO CICLO DE CONTROLO
 // =============================================================================
 // Define o ciclo de controlo em milissegundos
-const unsigned long CONTROL_CYCLE_MS = 60000; // 1 minuto (60,000 ms)
+const unsigned long CONTROL_CYCLE_MS = 600000; // 1 minuto (60,000 ms)
 unsigned long cycleStartTime = 0;
 // Variáveis para guardar o estado atual (ligado/desligado) para os logs
 bool pumpState = false;
