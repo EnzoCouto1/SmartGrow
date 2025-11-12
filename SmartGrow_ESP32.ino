@@ -1,7 +1,9 @@
 /*
- * SmartGrow ESP32 - Código para Estufa Inteligente v1.3
- * Lógica de Controlo Proporcional ao Tempo (Ciclo de 1 minuto)
- * * Pinagem principal:
+ * SmartGrow ESP32 - Código para Estufa Inteligente v1.4
+ * Lógica de Controlo Proporcional ao Tempo (Ciclo de 2 minutos)
+ * Aplica "Zona Morta" de 30% em todos os atuadores.
+ *
+ * Pinagem principal:
  * - GPIO34: Sensor umidade solo (AOUT)
  * - GPIO32: Sensor luminosidade (LDR AOUT)
  * - GPIO23: Sensor DHT22 (DATA) - temp/umidade ar
@@ -19,68 +21,51 @@
 #include <ArduinoJson.h>
 #include <DHT.h>
 
-// =============================================================================
-// CONFIGURAÇÕES DE REDE
-// =============================================================================
-const char* ssid = "SEU_WIFI_SSID";           // Nome da sua rede WiFi
-const char* password = "SUA_SENHA_WIFI";      // Senha da sua rede WiFi
-const char* api_url = "http://SEU_IP:8000";   // IP do computador com a API
+// Configurações de Rede
+const char* ssid = "SEU_WIFI_SSID";
+const char* password = "SUA_SENHA_WIFI";
+const char* api_url = "http://SEU_IP:8000";
 
-// =============================================================================
-// CONFIGURAÇÕES DOS SENSORES
-// =============================================================================
-#define DHT_PIN 23                    // GPIO23 - DHT22
-#define DHT_TYPE DHT22                // Tipo do sensor
-#define SOIL_MOISTURE_PIN 34          // GPIO34 - Sensor umidade solo
-#define ULTRASONIC_TRIG_PIN 5         // GPIO5 - Sensor ultrassônico TRIG
-#define ULTRASONIC_ECHO_PIN 4         // GPIO4 - Sensor ultrassônico ECHO
-#define LDR_PIN 32                    // GPIO32 (Pino ADC1)
+// Configurações dos Sensores
+#define DHT_PIN 23
+#define DHT_TYPE DHT22
+#define SOIL_MOISTURE_PIN 34
+#define ULTRASONIC_TRIG_PIN 5
+#define ULTRASONIC_ECHO_PIN 4
+#define LDR_PIN 32
 
-// =============================================================================
-// CONFIGURAÇÕES DOS ATUADORES (RELÉS)
-// =============================================================================
-#define PUMP_RELAY_PIN 26             // GPIO26 - Bomba de água
-#define LIGHT_RELAY_PIN 27            // GPIO27 - Iluminação
-#define FAN_RELAY_PIN 14              // GPIO14 - Exaustor/ventilação
-#define HEATER_RELAY_PIN 12           // GPIO12 - Aquecedor
-#define HUMIDIFIER_RELAY_PIN 13       // GPIO13 - Umidificador
+// Configurações dos Atuadores (Relés)
+#define PUMP_RELAY_PIN 26
+#define LIGHT_RELAY_PIN 27
+#define FAN_RELAY_PIN 14
+#define HEATER_RELAY_PIN 12
+#define HUMIDIFIER_RELAY_PIN 13
 
-// =============================================================================
-// CONFIGURAÇÕES DO CICLO DE CONTROLO
-// =============================================================================
-// Define o ciclo de controlo em milissegundos
-const unsigned long CONTROL_CYCLE_MS = 600000; // 1 minuto (60,000 ms)
+// Configurações do Ciclo de Controlo
+const unsigned long CONTROL_CYCLE_MS = 120000; // 2 minutos (120,000 ms)
 unsigned long cycleStartTime = 0;
-// Variáveis para guardar o estado atual (ligado/desligado) para os logs
 bool pumpState = false;
 bool fanState = false;
 bool lightState = false;
 
-// =============================================================================
-// VARIÁVEIS GLOBAIS
-// =============================================================================
+// Variáveis Globais
 DHT dht(DHT_PIN, DHT_TYPE);
 unsigned long lastSensorRead = 0;
 unsigned long lastApiCall = 0;
-const unsigned long SENSOR_INTERVAL = 5000; // Lê sensores a cada 5 segundos
-const unsigned long API_INTERVAL = 30000;   // Envia para API a cada 30 segundos
+const unsigned long SENSOR_INTERVAL = 5000; // 5 segundos
+const unsigned long API_INTERVAL = 30000;   // 30 segundos
 
-// Variáveis para armazenar leituras
 float temperatura = 0.0;
 float umidade_ar = 0.0;
 float umidade_solo = 0.0;
 float distancia_agua = 0.0;
 float luminosidade = 0.0;
 
-// Estado dos atuadores (recebido da API)
 float nivel_irrigacao = 0.0;
 float velocidade_ventilacao = 0.0;
 float nivel_iluminacao = 0.0;
 
-// =============================================================================
-// FUNÇÕES DE LEITURA DOS SENSORES
-// =============================================================================
-
+// Funções de Leitura dos Sensores
 float lerTemperatura() {
   float temp = dht.readTemperature();
   if (isnan(temp)) {
@@ -124,10 +109,7 @@ float lerLuminosidade() {
   return lum_percent;
 }
 
-// =============================================================================
-// FUNÇÕES DE COMUNICAÇÃO COM API
-// =============================================================================
-
+// Funções de Comunicação com API
 void enviarDadosParaAPI() {
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("WiFi desconectado!");
@@ -197,27 +179,38 @@ void obterStatusSistema() {
   http.end();
 }
 
-// =============================================================================
-// FUNÇÃO DE CONTROLO PROPORCIONAL AO TEMPO
-// =============================================================================
-
+// Função de Controlo Proporcional ao Tempo
 void gerenciarAtuadores(unsigned long currentTime) {
-    // Verifica se o ciclo de 1 minuto reiniciou
     if (currentTime - cycleStartTime >= CONTROL_CYCLE_MS) {
         cycleStartTime = currentTime; // Reinicia o ciclo
     }
 
-    // Pega o tempo que já passou no ciclo atual
     unsigned long elapsedTimeInCycle = currentTime - cycleStartTime;
 
-    // Calcula por quanto tempo cada atuador deve ficar ligado *neste* ciclo
-    unsigned long pumpOnDuration = (CONTROL_CYCLE_MS * (nivel_irrigacao / 100.0));
-    unsigned long fanOnDuration = (CONTROL_CYCLE_MS * (velocidade_ventilacao / 100.0));
-    unsigned long lightOnDuration = (CONTROL_CYCLE_MS * (nivel_iluminacao / 100.0));
+    // --- Lógica da Bomba (Com Zona Morta de 30%) ---
+    unsigned long pumpOnDuration = 0; // Começa em 0 (desligada)
+    if (nivel_irrigacao > 30.0) {
+        // Só calcula o tempo de ligação se passar da zona morta
+        pumpOnDuration = (CONTROL_CYCLE_MS * (nivel_irrigacao / 100.0));
+    }
 
-    // --- Lógica da Bomba ---
+    // --- Lógica da Ventoinha (Com Zona Morta de 30%) ---
+    unsigned long fanOnDuration = 0; // Começa em 0 (desligada)
+    if (velocidade_ventilacao > 30.0) {
+        // Só calcula o tempo de ligação se passar da zona morta
+        fanOnDuration = (CONTROL_CYCLE_MS * (velocidade_ventilacao / 100.0));
+    }
+
+    // --- Lógica da Iluminação (Com Zona Morta de 30%) ---
+    unsigned long lightOnDuration = 0; // Começa em 0 (desligada)
+    if (nivel_iluminacao > 30.0) {
+         // Só calcula o tempo de ligação se passar da zona morta
+        lightOnDuration = (CONTROL_CYCLE_MS * (nivel_iluminacao / 100.0));
+    }
+
+    // --- Controlo da Bomba ---
     if (elapsedTimeInCycle < pumpOnDuration) {
-        if (!pumpState) { // Só imprime a mudança de estado
+        if (!pumpState) {
             Serial.println("Decisão de Controlo: LIGANDO Bomba");
             pumpState = true;
         }
@@ -230,7 +223,7 @@ void gerenciarAtuadores(unsigned long currentTime) {
         digitalWrite(PUMP_RELAY_PIN, LOW);
     }
 
-    // --- Lógica da Ventoinha ---
+    // --- Controlo da Ventoinha ---
     if (elapsedTimeInCycle < fanOnDuration) {
         if (!fanState) {
             Serial.println("Decisão de Controlo: LIGANDO Ventilação");
@@ -245,7 +238,7 @@ void gerenciarAtuadores(unsigned long currentTime) {
         digitalWrite(FAN_RELAY_PIN, LOW);
     }
 
-    // --- Lógica da Iluminação ---
+    // --- Controlo da Iluminação ---
     if (elapsedTimeInCycle < lightOnDuration) {
         if (!lightState) {
             Serial.println("Decisão de Controlo: LIGANDO Iluminação");
@@ -261,41 +254,31 @@ void gerenciarAtuadores(unsigned long currentTime) {
     }
 }
 
-// =============================================================================
-// CONFIGURAÇÃO INICIAL (Setup)
-// =============================================================================
-
+// Configuração Inicial (Setup)
 void setup() {
   Serial.begin(115200);
   delay(1000);
   
-  Serial.println("🌱 SmartGrow ESP32 v1.3 (Ciclo 1 min) - Iniciando...");
+  Serial.println("🌱 SmartGrow ESP32 v1.4 (Ciclo 2 min) - Iniciando...");
   
-  // Configura pinos dos relés como saída
   pinMode(PUMP_RELAY_PIN, OUTPUT);
   pinMode(LIGHT_RELAY_PIN, OUTPUT);
   pinMode(FAN_RELAY_PIN, OUTPUT);
   pinMode(HEATER_RELAY_PIN, OUTPUT);
   pinMode(HUMIDIFIER_RELAY_PIN, OUTPUT);
   
-  // Configura pinos do sensor ultrassônico
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
-
-  // Configura pino do LDR
   pinMode(LDR_PIN, INPUT); 
   
-  // Inicializa todos os relés desligados
   digitalWrite(PUMP_RELAY_PIN, LOW);
   digitalWrite(LIGHT_RELAY_PIN, LOW);
   digitalWrite(FAN_RELAY_PIN, LOW);
   digitalWrite(HEATER_RELAY_PIN, LOW);
   digitalWrite(HUMIDIFIER_RELAY_PIN, LOW);
   
-  // Inicializa sensor DHT22
   dht.begin();
   
-  // Conecta ao WiFi
   WiFi.begin(ssid, password);
   Serial.print("Conectando ao WiFi");
   
@@ -309,7 +292,6 @@ void setup() {
   Serial.println("IP: " + WiFi.localIP().toString());
   Serial.println("API URL: " + String(api_url));
 
-  // Teste inicial dos sensores
   Serial.println("\n🔍 Testando sensores...");
   temperatura = lerTemperatura();
   umidade_ar = lerUmidadeAr();
@@ -317,27 +299,23 @@ void setup() {
   distancia_agua = lerDistanciaAgua();
   luminosidade = lerLuminosidade();
   
-  Serial.println("Leituras iniciais:");
+  Serial.println("Leitura inicial:");
   Serial.println("  Temperatura: " + String(temperatura) + "°C");
   Serial.println("  Umidade do ar: " + String(umidade_ar) + "%");
   Serial.println("  Umidade do solo: " + String(umidade_solo) + "%");
   Serial.println("  Luminosidade: " + String(luminosidade) + "%");
   Serial.println("  Distância da água: " + String(distancia_agua) + " cm");
   
-  // Inicia o ciclo de controlo
   cycleStartTime = millis();
   
   Serial.println("\n✅ Sistema iniciado com sucesso!");
 }
 
-// =============================================================================
-// LOOP PRINCIPAL
-// =============================================================================
-
+// Loop Principal
 void loop() {
   unsigned long currentTime = millis();
   
-  // --- TAREFA 1: LER SENSORES (a cada 5 seg) ---
+  // Tarefa 1: Ler Sensores
   if (currentTime - lastSensorRead >= SENSOR_INTERVAL) {
     temperatura = lerTemperatura();
     umidade_ar = lerUmidadeAr();
@@ -355,14 +333,14 @@ void loop() {
     lastSensorRead = currentTime;
   }
   
-  // --- TAREFA 2: FALAR COM A API (a cada 30 seg) ---
+  // Tarefa 2: Falar com a API
   if (currentTime - lastApiCall >= API_INTERVAL) {
     enviarDadosParaAPI(); // Envia dados e recebe novos comandos
     lastApiCall = currentTime;
   }
   
-  // --- TAREFA 3: CONTROLAR OS ATUADORES (constantemente) ---
+  // Tarefa 3: Controlar os Atuadores
   gerenciarAtuadores(currentTime);
    
-  delay(10); // Pequena pausa para estabilidade
+  delay(10);
 }

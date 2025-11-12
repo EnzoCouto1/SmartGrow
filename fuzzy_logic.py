@@ -2,12 +2,11 @@
 import numpy as np
 import skfuzzy as fuzz
 from skfuzzy import control as ctrl
+import matplotlib.pyplot as plt # Deixei só este import
 
 # --- 1. Variáveis de Entrada (usadas por todos os sistemas) ---
 temperatura = ctrl.Antecedent(np.arange(0, 51, 1), 'temperatura')
 umidade = ctrl.Antecedent(np.arange(0, 101, 1), 'umidade')
-# --- NOVO: Variável de Entrada de Luz ---
-# Vamos assumir que o sensor envia um valor de 0 (escuro total) a 100 (luz total)
 luminosidade = ctrl.Antecedent(np.arange(0, 101, 1), 'luminosidade')
 
 # --- 2. Funções de Pertinência para as Entradas ---
@@ -21,13 +20,14 @@ umidade['seca'] = fuzz.trimf(umidade.universe, [0, 0, 40])
 umidade['ideal'] = fuzz.trimf(umidade.universe, [30, 50, 70])
 umidade['umida'] = fuzz.trimf(umidade.universe, [60, 100, 100])
 
-# --- NOVO: Funções de Pertinência da Luminosidade ---
+# Funções de Pertinência da Luminosidade
 luminosidade['escuro'] = fuzz.trimf(luminosidade.universe, [0, 0, 30])
 luminosidade['meia_luz'] = fuzz.trimf(luminosidade.universe, [20, 40, 60])
 luminosidade['claro'] = fuzz.trimf(luminosidade.universe, [50, 100, 100])
 
 # ==============================================================================
-# --- SISTEMA DE CONTROLE DE IRRIGAÇÃO (Sem alteração) ---
+# --- SISTEMA DE CONTROLE DE IRRIGAÇÃO ---
+# (Esta lógica está correta, pois a "zona morta" é tratada no ESP32)
 # ==============================================================================
 irrigacao = ctrl.Consequent(np.arange(0, 101, 1), 'irrigacao')
 irrigacao['baixa'] = fuzz.trimf(irrigacao.universe, [0, 0, 50])
@@ -36,8 +36,8 @@ irrigacao['alta'] = fuzz.trimf(irrigacao.universe, [50, 100, 100])
 # Regras de Irrigação
 regra_irr_1 = ctrl.Rule(temperatura['quente'] & umidade['seca'], irrigacao['alta'])
 regra_irr_2 = ctrl.Rule(temperatura['agradavel'] & umidade['seca'], irrigacao['media'])
-regra_irr_3 = ctrl.Rule(umidade['ideal'], irrigacao['baixa'])
-regra_irr_4 = ctrl.Rule(umidade['umida'], irrigacao['baixa'])
+regra_irr_3 = ctrl.Rule(umidade['ideal'], irrigacao['baixa']) # "ideal" -> "baixa" (~15%)
+regra_irr_4 = ctrl.Rule(umidade['umida'], irrigacao['baixa']) # "umida" -> "baixa" (~15%)
 # Sistema de Irrigação
 sistema_controle_irrigacao = ctrl.ControlSystem([regra_irr_1, regra_irr_2, regra_irr_3, regra_irr_4])
 simulador_irrigacao = ctrl.ControlSystemSimulation(sistema_controle_irrigacao)
@@ -48,16 +48,18 @@ def calcular_nivel_irrigacao(temp_atual, umidade_atual):
     return simulador_irrigacao.output['irrigacao']
 
 # ==============================================================================
-# --- SISTEMA DE CONTROLE DE VENTILAÇÃO (Sem alteração) ---
+# --- SISTEMA DE CONTROLE DE VENTILAÇÃO (Com a correção) ---
 # ==============================================================================
 ventilacao = ctrl.Consequent(np.arange(0, 101, 1), 'ventilacao')
 ventilacao['baixa'] = fuzz.trimf(ventilacao.universe, [0, 0, 50])
 ventilacao['media'] = fuzz.trimf(ventilacao.universe, [25, 50, 75])
 ventilacao['alta'] = fuzz.trimf(ventilacao.universe, [50, 100, 100])
-# Regras de Ventilação
+
+# --- CORREÇÃO DE LÓGICA AQUI ---
 regra_ven_1 = ctrl.Rule(temperatura['fria'], ventilacao['baixa'])
-regra_ven_2 = ctrl.Rule(temperatura['agradavel'], ventilacao['media'])
+regra_ven_2 = ctrl.Rule(temperatura['agradavel'], ventilacao['baixa']) # MUDADO DE 'media' PARA 'baixa'
 regra_ven_3 = ctrl.Rule(temperatura['quente'], ventilacao['alta'])
+
 # Sistema de Ventilação
 sistema_controle_ventilacao = ctrl.ControlSystem([regra_ven_1, regra_ven_2, regra_ven_3])
 simulador_ventilacao = ctrl.ControlSystemSimulation(sistema_controle_ventilacao)
@@ -67,11 +69,10 @@ def calcular_velocidade_ventilacao(temp_atual):
     return simulador_ventilacao.output['ventilacao']
 
 # ==============================================================================
-# --- NOVO: SISTEMA DE CONTROLE DE ILUMINAÇÃO ---
+# --- SISTEMA DE CONTROLE DE ILUMINAÇÃO ---
 # ==============================================================================
-iluminacao = ctrl.Consequent(np.arange(0, 101, 1), 'iluminacao') # 0 a 100% de força da luz
+iluminacao = ctrl.Consequent(np.arange(0, 101, 1), 'iluminacao') 
 
-# Esta lógica é invertida: quanto mais luz natural, menor a luz artificial.
 iluminacao['desligada'] = fuzz.trimf(iluminacao.universe, [0, 0, 40])
 iluminacao['media'] = fuzz.trimf(iluminacao.universe, [30, 50, 70])
 iluminacao['alta'] = fuzz.trimf(iluminacao.universe, [60, 100, 100])
@@ -89,17 +90,52 @@ def calcular_nivel_iluminacao(lum_atual):
     simulador_iluminacao.compute()
     return simulador_iluminacao.output['iluminacao']
 
-# --- Testes (se executar este arquivo diretamente) ---
+# --- Testes e Gerador de Gráficos ---
 if __name__ == '__main__':
-    temp_teste = 35
-    umidade_teste = 25
-    lum_teste = 10 # Simula um ambiente escuro
+    
+    print("Gerando gráficos das Funções de Pertinência...")
 
-    nivel_irr = calcular_nivel_irrigacao(temp_teste, umidade_teste)
-    veloc_ven = calcular_velocidade_ventilacao(temp_teste)
-    nivel_ilu = calcular_nivel_iluminacao(lum_teste)
+    # 1. Plotar as Variáveis de Entrada (Antecedentes)
+    temperatura.view()
+    plt.savefig('grafico_temperatura.png') # Salva o gráfico
+    
+    umidade.view()
+    plt.savefig('grafico_umidade.png')
+    
+    luminosidade.view()
+    plt.savefig('grafico_luminosidade.png')
 
-    print(f"--- Cenário: Temp={temp_teste}, Umidade={umidade_teste}, Lum={lum_teste} ---")
-    print(f"  -> Nível de Irrigação: {nivel_irr:.2f}%")
-    print(f"  -> Velocidade da Ventilação: {veloc_ven:.2f}%")
-    print(f"  -> Nível de Iluminação: {nivel_ilu:.2f}%")
+    # 2. Plotar as Variáveis de Saída (Consequentes)
+    irrigacao.view()
+    plt.savefig('grafico_irrigacao.png')
+    
+    ventilacao.view()
+    plt.savefig('grafico_ventilacao.png')
+    
+    iluminacao.view()
+    plt.savefig('grafico_iluminacao.png')
+
+    print("Gráficos das variáveis salvos como .png na pasta do projeto!")
+
+    # 3. Plotar um Exemplo de Decisão
+    # Simula um cenário "agradável" (25C) e "meia-luz" (35%)
+    simulador_irrigacao.input['temperatura'] = 25
+    simulador_irrigacao.input['umidade'] = 55
+    simulador_irrigacao.compute()
+    
+    simulador_ventilacao.input['temperatura'] = 25
+    simulador_ventilacao.compute()
+    
+    simulador_iluminacao.input['luminosidade'] = 35
+    simulador_iluminacao.compute()
+
+    print("\n--- Teste de Lógica (25C, 55% Umid, 35% Lum) ---")
+    print(f"Irrigação: {simulador_irrigacao.output['irrigacao']:.2f}%")
+    print(f"Ventilação (COM CORREÇÃO): {simulador_ventilacao.output['ventilacao']:.2f}%") # Deve ser baixo
+    print(f"Iluminação: {simulador_iluminacao.output['iluminacao']:.2f}%")
+
+    # Mostra como a decisão final é calculada
+    ventilacao.view(sim=simulador_ventilacao) # Mudei para 'ventilacao' para ver o gráfico da correção
+    plt.savefig('grafico_decisao_exemplo.png')
+    
+    print("Gráfico de exemplo da decisão de ventilação salvo!")
