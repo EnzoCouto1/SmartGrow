@@ -38,6 +38,7 @@ app = FastAPI(
 origins = [
     "http://localhost:5173", 
     "http://localhost:3000", 
+    "https://smart-grow-4enawmc3i-gustavos-projects-6aab325e.vercel.app"
     "*"                      
 ]
 
