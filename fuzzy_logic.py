@@ -95,9 +95,9 @@ if __name__ == '__main__':
     
     print("Gerando gráficos das Funções de Pertinência...")
 
-    # 1. Plotar as Variáveis de Entrada (Antecedentes)
+    # 1. Salva os gráficos das Variáveis (igual a antes)
     temperatura.view()
-    plt.savefig('grafico_temperatura.png') # Salva o gráfico
+    plt.savefig('grafico_temperatura.png')
     
     umidade.view()
     plt.savefig('grafico_umidade.png')
@@ -105,7 +105,6 @@ if __name__ == '__main__':
     luminosidade.view()
     plt.savefig('grafico_luminosidade.png')
 
-    # 2. Plotar as Variáveis de Saída (Consequentes)
     irrigacao.view()
     plt.savefig('grafico_irrigacao.png')
     
@@ -115,27 +114,20 @@ if __name__ == '__main__':
     iluminacao.view()
     plt.savefig('grafico_iluminacao.png')
 
-    print("Gráficos das variáveis salvos como .png na pasta do projeto!")
+    print("Gráficos das variáveis salvos!")
 
-    # 3. Plotar um Exemplo de Decisão
-    # Simula um cenário "agradável" (25C) e "meia-luz" (35%)
-    simulador_irrigacao.input['temperatura'] = 25
-    simulador_irrigacao.input['umidade'] = 55
-    simulador_irrigacao.compute()
-    
+    # 2. Simulação para o Gráfico de Decisão (VENTILAÇÃO)
+    # Cenário: Temperatura 25°C (Meio agradável, meio quente)
     simulador_ventilacao.input['temperatura'] = 25
     simulador_ventilacao.compute()
     
-    simulador_iluminacao.input['luminosidade'] = 35
-    simulador_iluminacao.compute()
+    print(f"Teste Ventilação (25C): {simulador_ventilacao.output['ventilacao']:.2f}%")
 
-    print("\n--- Teste de Lógica (25C, 55% Umid, 35% Lum) ---")
-    print(f"Irrigação: {simulador_irrigacao.output['irrigacao']:.2f}%")
-    print(f"Ventilação (COM CORREÇÃO): {simulador_ventilacao.output['ventilacao']:.2f}%") # Deve ser baixo
-    print(f"Iluminação: {simulador_iluminacao.output['iluminacao']:.2f}%")
-
-    # Mostra como a decisão final é calculada
-    ventilacao.view(sim=simulador_ventilacao) # Mudei para 'ventilacao' para ver o gráfico da correção
-    plt.savefig('grafico_decisao_exemplo.png')
+    # --- AQUI ESTAVA O ERRO ---
+    # Antes estava iluminacao.view(...). Agora vamos usar ventilacao.view(...)
+    ventilacao.view(sim=simulador_ventilacao)
     
-    print("Gráfico de exemplo da decisão de ventilação salvo!")
+    # Salva com o nome correto
+    plt.savefig('grafico_decisao_ventilacao.png')
+    
+    print("Gráfico 'grafico_decisao_ventilacao.png' gerado com sucesso!")
