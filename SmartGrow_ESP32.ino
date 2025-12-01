@@ -1,19 +1,23 @@
 /*
- * SmartGrow ESP32 - Código para Estufa Inteligente v1.4
+ * SmartGrow ESP32 - Código para Estufa Inteligente v1.5
  * Lógica de Controlo Proporcional ao Tempo (Ciclo de 2 minutos)
  * Aplica "Zona Morta" de 30% em todos os atuadores.
- *
- * Pinagem principal:
- * - GPIO34: Sensor umidade solo (AOUT)
- * - GPIO32: Sensor luminosidade (LDR AOUT)
- * - GPIO23: Sensor DHT22 (DATA) - temp/umidade ar
- * - GPIO5: Sensor ultrassônico (TRIG)
- * - GPIO4: Sensor ultrassônico (ECHO)
- * - GPIO26: Relé bomba de água
- * - GPIO27: Relé iluminação
- * - GPIO14: Relé exaustor/ventilação
- * - GPIO12: Relé aquecedor
- * - GPIO13: Relé umidificador
+ * 
+ * Pinagem conforme Pinout.pdf:
+ * ATUADORES:
+ * - GPIO26: Relé Bomba 1 (Irrigação Setorizada)
+ * - GPIO14: Relé Bomba 2 (Irrigação Setorizada)
+ * - GPIO13: Relé Bomba 3 (Irrigação Setorizada)
+ * - GPIO27: Relé Iluminação (Controle Fotoperíodo)
+ * - GPIO12: Relé Ventilação (Controle das Fans)
+ * 
+ * SENSORES:
+ * - GPIO34: Sensor Solo 1 (Umidade do Solo)
+ * - GPIO35: Sensor Solo 2 (Umidade do Solo)
+ * - GPIO33: Sensor Solo 3 (Umidade do Solo)
+ * - GPIO23: Sensor DHT22 (Temp. e Umidade Ar)
+ * - GPIO05: Ultrassônico TRIG (Nível de Água - Saída)
+ * - GPIO19: Ultrassônico ECHO (Nível de Água - Entrada) - CRÍTICO: Usar Divisor de Tensão!
  */
 
 #include <WiFi.h>
@@ -29,17 +33,18 @@ const char* api_url = "http://SEU_IP:8000";
 // Configurações dos Sensores
 #define DHT_PIN 23
 #define DHT_TYPE DHT22
-#define SOIL_MOISTURE_PIN 34
+#define SOIL_MOISTURE_PIN_1 34  // Sensor Solo 1
+#define SOIL_MOISTURE_PIN_2 35  // Sensor Solo 2
+#define SOIL_MOISTURE_PIN_3 33  // Sensor Solo 3
 #define ULTRASONIC_TRIG_PIN 5
-#define ULTRASONIC_ECHO_PIN 4
-#define LDR_PIN 32
+#define ULTRASONIC_ECHO_PIN 19   // CORRIGIDO: Era GPIO4, agora GPIO19 (requer divisor de tensão!)
 
-// Configurações dos Atuadores (Relés)
-#define PUMP_RELAY_PIN 26
-#define LIGHT_RELAY_PIN 27
-#define FAN_RELAY_PIN 14
-#define HEATER_RELAY_PIN 12
-#define HUMIDIFIER_RELAY_PIN 13
+// Configurações dos Atuadores (Relés) - Conforme Pinout.pdf
+#define PUMP_RELAY_PIN_1 26     // Bomba 1 (Irrigação Setorizada)
+#define PUMP_RELAY_PIN_2 14     // Bomba 2 (Irrigação Setorizada)
+#define PUMP_RELAY_PIN_3 13     // Bomba 3 (Irrigação Setorizada)
+#define LIGHT_RELAY_PIN 27      // Iluminação (Controle Fotoperíodo)
+#define FAN_RELAY_PIN 12        // CORRIGIDO: Era GPIO14, agora GPIO12 (Ventilação)
 
 // Configurações do Ciclo de Controlo
 const unsigned long CONTROL_CYCLE_MS = 120000; // 2 minutos (120,000 ms)
@@ -85,10 +90,18 @@ float lerUmidadeAr() {
 }
 
 float lerUmidadeSolo() {
-  int valor_analogico = analogRead(SOIL_MOISTURE_PIN);
-  float umidade = map(valor_analogico, 0, 4095, 100, 0); // Invertido: 0 (seco) -> 100%
-  umidade = constrain(umidade, 0, 100);
-  return umidade;
+  // Lê os 3 sensores de solo e calcula a média
+  int valor1 = analogRead(SOIL_MOISTURE_PIN_1);
+  int valor2 = analogRead(SOIL_MOISTURE_PIN_2);
+  int valor3 = analogRead(SOIL_MOISTURE_PIN_3);
+  
+  float umidade1 = map(valor1, 0, 4095, 100, 0); // Invertido: 0 (seco) -> 100%
+  float umidade2 = map(valor2, 0, 4095, 100, 0);
+  float umidade3 = map(valor3, 0, 4095, 100, 0);
+  
+  float umidade_media = (umidade1 + umidade2 + umidade3) / 3.0;
+  umidade_media = constrain(umidade_media, 0, 100);
+  return umidade_media;
 }
 
 float lerDistanciaAgua() {
@@ -102,11 +115,12 @@ float lerDistanciaAgua() {
   return distancia;
 }
 
+// Nota: Sensor de luminosidade (LDR) não está no Pinout.pdf
+// Se necessário, adicione um sensor de luminosidade em um pino disponível
 float lerLuminosidade() {
-  int valor_analogico_ldr = analogRead(LDR_PIN);
-  float lum_percent = map(valor_analogico_ldr, 4095, 0, 0, 100); // Converte 4095(escuro) -> 0%
-  lum_percent = constrain(lum_percent, 0, 100);
-  return lum_percent;
+  // Por enquanto retorna um valor padrão ou 0
+  // TODO: Adicionar sensor de luminosidade se necessário
+  return 50.0; // Valor padrão temporário
 }
 
 // Funções de Comunicação com API
@@ -208,19 +222,24 @@ void gerenciarAtuadores(unsigned long currentTime) {
         lightOnDuration = (CONTROL_CYCLE_MS * (nivel_iluminacao / 100.0));
     }
 
-    // --- Controlo da Bomba ---
+    // --- Controlo da Bomba (3 bombas setorizadas) ---
+    // Todas as 3 bombas são controladas pelo mesmo nível de irrigação
     if (elapsedTimeInCycle < pumpOnDuration) {
         if (!pumpState) {
-            Serial.println("Decisão de Controlo: LIGANDO Bomba");
+            Serial.println("Decisão de Controlo: LIGANDO Bombas de Irrigação");
             pumpState = true;
         }
-        digitalWrite(PUMP_RELAY_PIN, HIGH);
+        digitalWrite(PUMP_RELAY_PIN_1, HIGH);
+        digitalWrite(PUMP_RELAY_PIN_2, HIGH);
+        digitalWrite(PUMP_RELAY_PIN_3, HIGH);
     } else {
         if (pumpState) {
-            Serial.println("Decisão de Controlo: DESLIGANDO Bomba");
+            Serial.println("Decisão de Controlo: DESLIGANDO Bombas de Irrigação");
             pumpState = false;
         }
-        digitalWrite(PUMP_RELAY_PIN, LOW);
+        digitalWrite(PUMP_RELAY_PIN_1, LOW);
+        digitalWrite(PUMP_RELAY_PIN_2, LOW);
+        digitalWrite(PUMP_RELAY_PIN_3, LOW);
     }
 
     // --- Controlo da Ventoinha ---
@@ -261,21 +280,24 @@ void setup() {
   
   Serial.println("🌱 SmartGrow ESP32 v1.4 (Ciclo 2 min) - Iniciando...");
   
-  pinMode(PUMP_RELAY_PIN, OUTPUT);
+  // Configuração dos Relés (Atuadores)
+  pinMode(PUMP_RELAY_PIN_1, OUTPUT);
+  pinMode(PUMP_RELAY_PIN_2, OUTPUT);
+  pinMode(PUMP_RELAY_PIN_3, OUTPUT);
   pinMode(LIGHT_RELAY_PIN, OUTPUT);
   pinMode(FAN_RELAY_PIN, OUTPUT);
-  pinMode(HEATER_RELAY_PIN, OUTPUT);
-  pinMode(HUMIDIFIER_RELAY_PIN, OUTPUT);
   
+  // Configuração dos Sensores
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
-  pinMode(LDR_PIN, INPUT); 
+  // Sensores de solo são analógicos, não precisam de pinMode 
   
-  digitalWrite(PUMP_RELAY_PIN, LOW);
+  // Inicializa todos os relés em LOW (desligados)
+  digitalWrite(PUMP_RELAY_PIN_1, LOW);
+  digitalWrite(PUMP_RELAY_PIN_2, LOW);
+  digitalWrite(PUMP_RELAY_PIN_3, LOW);
   digitalWrite(LIGHT_RELAY_PIN, LOW);
   digitalWrite(FAN_RELAY_PIN, LOW);
-  digitalWrite(HEATER_RELAY_PIN, LOW);
-  digitalWrite(HUMIDIFIER_RELAY_PIN, LOW);
   
   dht.begin();
   
