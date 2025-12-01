@@ -4,52 +4,59 @@ from fastapi.middleware.cors import CORSMiddleware
 import sqlite3
 import datetime
 
-from fuzzy_logic import (
-    calcular_nivel_irrigacao, 
-    calcular_velocidade_ventilacao,
-    calcular_nivel_iluminacao
-)
+# Importa as funções do cérebro fuzzy (agora sem iluminação fuzzy)
+from fuzzy_logic import calcular_nivel_irrigacao, calcular_velocidade_ventilacao
 
 DATABASE_NAME = "leituras.db"
 
+# --- CONFIGURAÇÕES GERAIS ---
+# Horário para ligar/desligar a luz (Sistema Time-Based)
+HORA_LIGAR_LUZES = 18  # 18:00
+HORA_DESLIGAR_LUZES = 6 # 06:00
+
 # --- MODELOS DE DADOS ---
 
+# 1. Leitura do Sensor (Sem luminosidade, pois é por horário)
 class LeituraSensor(BaseModel):
     temperatura_celsius: float
     umidade_solo: float
-    luminosidade: float 
 
+# 2. Configuração de Automação (Frontend)
 class ConfigAutomacao(BaseModel):
     sistema: str # "irrigacao" ou "iluminacao"
     ativo: bool
 
+# 3. Comando Manual (Frontend)
 class ComandoManual(BaseModel):
     sistema: str # "irrigacao" ou "iluminacao"
     ligar: bool
 
 # --- CONFIGURAÇÃO DA API ---
 
+print("\n\n--- ESTOU CARREGANDO O ARQUIVO CERTO (TIME-BASED)! ---\n\n")
+
 app = FastAPI(
     title="API da Estufa Inteligente",
-    version="1.2.0"
+    version="2.0.0"
 )
 
+# Criação automática do Banco de Dados no startup
 @app.on_event("startup")
 def startup_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
+    # Tabela atualizada (sem coluna luminosidade)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS leituras (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         temperatura REAL NOT NULL,
         umidade REAL NOT NULL,
-        luminosidade REAL NOT NULL,
         horario TEXT DEFAULT CURRENT_TIMESTAMP
     );
     """)
     conn.commit()
     conn.close()
-    print("--- BANCO DE DADOS INICIALIZADO COM SUCESSO ---")
+    print("--- BANCO DE DADOS VERIFICADO ---")
 
 # Configuração de CORS
 origins = [
@@ -69,20 +76,17 @@ app.add_middleware(
 
 # --- ESTADO GLOBAL ---
 
-# Estado atual dos atuadores (0 a 100%)
 estado_sistema = {
     "nivel_irrigacao": 0.0,
     "velocidade_ventilacao": 0.0,
     "nivel_iluminacao": 0.0  
 }
 
-# Configuração de Automação
 modo_automatico = {
     "irrigacao": True,
     "iluminacao": True
 }
 
-# Estado dos controles manuais
 controles_manuais = {
     "irrigacao": False, 
     "iluminacao": False
@@ -98,7 +102,7 @@ def read_root():
 def registrar_leitura(leitura: LeituraSensor):
     global estado_sistema
 
-    # 1. Processamento Fuzzy
+    # --- 1. Lógica Fuzzy (Irrigação e Ventilação) ---
     nivel_irrigacao_calculado = calcular_nivel_irrigacao(
         leitura.temperatura_celsius,
         leitura.umidade_solo
@@ -108,37 +112,42 @@ def registrar_leitura(leitura: LeituraSensor):
         leitura.temperatura_celsius
     )
 
-    nivel_iluminacao_calculado = calcular_nivel_iluminacao(
-        leitura.luminosidade
-    )
+    # --- 2. Lógica de Iluminação (Por Horário) ---
+    hora_atual = datetime.datetime.now().hour
+    # Se for noite (>= 18h ou < 6h), liga a luz (100%). Se for dia, desliga (0%).
+    if hora_atual >= HORA_LIGAR_LUZES or hora_atual < HORA_DESLIGAR_LUZES:
+        nivel_iluminacao_calculado = 100.0
+    else:
+        nivel_iluminacao_calculado = 0.0
 
-    # 2. Atualização do Estado (Lógica Híbrida Auto/Manual)
+    # --- 3. Atualização do Estado (Auto vs Manual) ---
+    
+    # Irrigação
     if modo_automatico["irrigacao"]:
         estado_sistema["nivel_irrigacao"] = nivel_irrigacao_calculado
     
-    # Ventilação é sempre automática neste modelo
+    # Ventilação (Sempre Auto)
     estado_sistema["velocidade_ventilacao"] = velocidade_ventilacao_calculada
 
+    # Iluminação
     if modo_automatico["iluminacao"]:
         estado_sistema["nivel_iluminacao"] = nivel_iluminacao_calculado
 
-    # Log operacional
-    print(f"[{datetime.datetime.now()}] Leitura: T={leitura.temperatura_celsius}°C, U={leitura.umidade_solo}%, L={leitura.luminosidade}%")
+    print(f"[{datetime.datetime.now()}] Leitura: T={leitura.temperatura_celsius}°C, U={leitura.umidade_solo}%")
     print(f"  -> Estado: Irr={estado_sistema['nivel_irrigacao']:.1f}%, Ven={estado_sistema['velocidade_ventilacao']:.1f}%, Luz={estado_sistema['nivel_iluminacao']:.1f}%")
 
-    # 3. Persistência no Banco de Dados
+    # --- 4. Salvar no Banco ---
     try:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
         cursor.execute(
-            "INSERT INTO leituras (temperatura, umidade, luminosidade) VALUES (?, ?, ?)", 
-            (leitura.temperatura_celsius, leitura.umidade_solo, leitura.luminosidade)
+            "INSERT INTO leituras (temperatura, umidade) VALUES (?, ?)", 
+            (leitura.temperatura_celsius, leitura.umidade_solo)
         )        
         conn.commit()
         conn.close()
         return {
             "status": "sucesso", 
-            "mensagem": "Leitura processada.", 
             "estado_atual": estado_sistema,
             "modo_automatico": modo_automatico
         }
@@ -164,7 +173,6 @@ def controle_manual(comando: ComandoManual):
     if comando.sistema in controles_manuais:
         controles_manuais[comando.sistema] = comando.ligar
         
-        # Sobrescreve o estado imediatamente (0% ou 100%)
         valor_manual = 100.0 if comando.ligar else 0.0
         
         if comando.sistema == "irrigacao":
@@ -186,7 +194,7 @@ def obter_leituras():
         conn = sqlite3.connect(DATABASE_NAME)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT id, temperatura, umidade, luminosidade, horario FROM leituras ORDER BY horario DESC")
+        cursor.execute("SELECT id, temperatura, umidade, horario FROM leituras ORDER BY horario DESC")
         leituras = cursor.fetchall()
         conn.close()
         return [dict(row) for row in leituras]
