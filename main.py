@@ -34,6 +34,23 @@ app = FastAPI(
     version="1.2.0"
 )
 
+@app.on_event("startup")
+def startup_db():
+    conn = sqlite3.connect(DATABASE_NAME)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS leituras (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        temperatura REAL NOT NULL,
+        umidade REAL NOT NULL,
+        luminosidade REAL NOT NULL,
+        horario TEXT DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+    conn.commit()
+    conn.close()
+    print("--- BANCO DE DADOS INICIALIZADO COM SUCESSO ---")
+
 # Configuração de CORS
 origins = [
     "http://localhost:5173", 
