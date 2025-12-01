@@ -61,54 +61,60 @@ DHT22 GND  → ESP32 GND
 DHT22 DATA → ESP32 GPIO23
 ```
 
-### **Sensor de Umidade do Solo:**
+### **Sensores de Umidade do Solo (3 sensores setorizados):**
 ```
-Sensor VCC → ESP32 3.3V
-Sensor GND → ESP32 GND
-Sensor AOUT → ESP32 GPIO34
+Sensor Solo 1:
+  - VCC → ESP32 3.3V
+  - GND → ESP32 GND
+  - AOUT → ESP32 GPIO34 (D34)
+
+Sensor Solo 2:
+  - VCC → ESP32 3.3V
+  - GND → ESP32 GND
+  - AOUT → ESP32 GPIO35 (D35)
+
+Sensor Solo 3:
+  - VCC → ESP32 3.3V
+  - GND → ESP32 GND
+  - AOUT → ESP32 GPIO33 (D33)
 ```
 
-### **Sensor Ultrassônico HC-SR04:**
+### **Sensor Ultrassônico HC-SR04 (Nível de Água):**
 ```
-HC-SR04 VCC  → ESP32 5V
+HC-SR04 VCC  → ESP32 5V (VIN)
 HC-SR04 GND  → ESP32 GND
-HC-SR04 TRIG → ESP32 GPIO5
-HC-SR04 ECHO → ESP32 GPIO4
+HC-SR04 TRIG → ESP32 GPIO5 (D5)
+HC-SR04 ECHO → ESP32 GPIO19 (D19) ⚠️ CRÍTICO: Usar Divisor de Tensão (5V → 3.3V)!
 ```
 
-### **Sensor de Luminosidade (LDR):**
+**⚠️ ATENÇÃO:** O pino ECHO do sensor ultrassônico retorna 5V, mas o ESP32 aceita apenas 3.3V. É **OBRIGATÓRIO** usar um divisor de tensão entre o ECHO e o GPIO19 para evitar danos ao ESP32.
+
+### **Módulos de Relé (Atuadores):**
 ```
-Sensor VCC → ESP32 3.3V
-Sensor GND → ESP32 GND 
-Sensor AOUT → ESP32 GPIO32
-```
-
-### **Módulos de Relé:**
-```
-Relé Bomba (GPIO26):
+Relé Bomba 1 - Irrigação Setorizada (GPIO26):
   - VCC → ESP32 3.3V
   - GND → ESP32 GND
-  - IN  → ESP32 GPIO26
+  - IN  → ESP32 GPIO26 (D26)
 
-Relé Iluminação (GPIO27):
+Relé Bomba 2 - Irrigação Setorizada (GPIO14):
   - VCC → ESP32 3.3V
   - GND → ESP32 GND
-  - IN  → ESP32 GPIO27
+  - IN  → ESP32 GPIO14 (D14)
 
-Relé Ventilação (GPIO14):
+Relé Bomba 3 - Irrigação Setorizada (GPIO13):
   - VCC → ESP32 3.3V
   - GND → ESP32 GND
-  - IN  → ESP32 GPIO14
+  - IN  → ESP32 GPIO13 (D13)
 
-Relé Aquecedor (GPIO12):
+Relé Iluminação - Controle Fotoperíodo (GPIO27):
+  - VCC → ESP32 3.3V ou 5V (SSR)
+  - GND → ESP32 GND
+  - IN  → ESP32 GPIO27 (D27)
+
+Relé Ventilação - Controle das Fans (GPIO12):
   - VCC → ESP32 3.3V
   - GND → ESP32 GND
-  - IN  → ESP32 GPIO12
-
-Relé Umidificador (GPIO13):
-  - VCC → ESP32 3.3V
-  - GND → ESP32 GND
-  - IN  → ESP32 GPIO13
+  - IN  → ESP32 GPIO12 (D12)
 ```
 
 ## Como Executar
