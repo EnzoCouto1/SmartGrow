@@ -1,12 +1,14 @@
 # 🌱 SmartGrow - Backend de Estufa Inteligente
 
-Este repositório contém o código do backend para o projeto de TCC "SmartGrow", um sistema de automação de estufa que utiliza **Lógica Fuzzy** para o controle inteligente de ambiente.
+Este repositório contém o código do backend para o projeto "SmartGrow", um sistema de automação de estufa que utiliza **Lógica Fuzzy** para o controle inteligente de ambiente.
 
 O sistema é construído em Python usando o framework **FastAPI** e é responsável por:
-* Receber dados de sensores (temperatura, umidade do solo, luminosidade).
-* Processar esses dados através de um motor de inferência Fuzzy.
-* Retornar os níveis de controle (0-100%) para os atuadores (irrigação, ventilação, iluminação).
+* Receber dados de sensores (temperatura, umidade do solo).
+* Processar esses dados através de um motor de inferência Fuzzy para controlar irrigação e ventilação.
+* Controlar a iluminação através de um temporizador fixo (ligado das 18h às 23h).
+* Retornar os níveis de controle (0-100%) para os atuadores (irrigação, ventilação).
 * Armazenar o histórico de leituras em um banco de dados SQLite.
+* Fornecer endpoints para controle manual do sistema.
 
 ## 🚀 Tecnologias Utilizadas
 * **Python 3**
@@ -41,16 +43,12 @@ Siga estes passos para configurar e executar o backend no seu computador.
     *(Se a ativação falhar no PowerShell, rode `Set-ExecutionPolicy Bypass -Scope Process` e tente novamente)*
 
 3.  **Instale as dependências:**
-    O arquivo `requirements.txt` [cite: 119] contém todas as bibliotecas necessárias.
     ```bash
     pip install -r requirements.txt
     ```
 
 4.  **Crie o Banco de Dados:**
-    Execute o script `database.py`  uma vez para criar o arquivo `leituras.db` e a tabela.
-    ```bash
-    python database.py
-    ```
+    O `main.py` criará e configurará o banco de dados automaticamente na primeira vez que for executado. O script `database.py` pode ser usado como referência, mas não precisa ser executado manualmente.
 
 ### 3. Execução
 
@@ -66,7 +64,7 @@ Siga estes passos para configurar e executar o backend no seu computador.
 
 ## 🧪 Como Testar o Backend
 
-[cite_start]Enquanto o hardware (ESP32) não está conectado, você pode usar o script de teste interativo `teste_sensor.py`  para simular o envio de dados.
+Enquanto o hardware (ESP32) não está conectado, você pode usar o script `teste_sensor.py` para simular o envio de dados.
 
 1.  Mantenha o servidor rodando no primeiro terminal.
 2.  Abra um **segundo terminal**, ative o `venv` nele também.
@@ -79,16 +77,16 @@ Siga estes passos para configurar e executar o backend no seu computador.
 ## 🤖 API Endpoints
 
 ### `POST /leituras`
-Recebe as leituras dos sensores e aciona a lógica Fuzzy.
+Recebe as leituras dos sensores, aciona a lógica Fuzzy e retorna o estado dos atuadores. **Este é o único endpoint que o ESP32 utiliza.**
 * **Corpo da Requisição (JSON):**
     ```json
     {
       "temperatura_celsius": 25.5,
-      "umidade_solo": 45.2,
-      "luminosidade": 80.0
+      "umidade_solo": 45.2
     }
     ```
 * **Resposta (JSON):**
+    A resposta contém o estado calculado para os atuadores, que o ESP32 deve aplicar.
     ```json
     {
       "status": "sucesso",
@@ -96,24 +94,33 @@ Recebe as leituras dos sensores e aciona a lógica Fuzzy.
       "estado_atual": {
         "nivel_irrigacao": 15.0,
         "velocidade_ventilacao": 35.5,
-        "nivel_iluminacao": 15.0
+        "nivel_iluminacao": 0.0 
       }
     }
     ```
+    *(O `nivel_iluminacao` é controlado pelo temporizador no backend, não pela lógica fuzzy)*
 
 ### `GET /status_sistema`
-Consultado pelo hardware (ESP32) para obter as ordens de controle.
+Consulta o estado atual dos atuadores. Pode ser usado por um frontend, mas não é utilizado pelo ESP32.
 * **Resposta (JSON):**
     ```json
     {
       "nivel_irrigacao": 15.0,
       "velocidade_ventilacao": 35.5,
-      "nivel_iluminacao": 15.0
+      "nivel_iluminacao": 0.0
     }
     ```
 
+### `POST /manual/irrigacao/{nivel}`
+Define manualmente o nível de irrigação (0-100).
+* **Exemplo:** `POST /manual/irrigacao/50`
+
+### `POST /manual/ventilacao/{velocidade}`
+Define manualmente a velocidade da ventilação (0-100).
+* **Exemplo:** `POST /manual/ventilacao/75`
+
 ### `GET /leituras`
-Consultado pelo frontend para exibir o histórico de dados.
+Consulta o histórico de leituras salvas no banco de dados.
 * **Resposta (JSON):**
     ```json
     [
