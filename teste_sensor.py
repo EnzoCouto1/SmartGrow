@@ -1,15 +1,16 @@
 import requests
 import datetime
 
-url = "https://smartgrow-ajtn.onrender.com/leituras" 
+url = "https://smartgrow-ajtn.onrender.com/leituras"
 
-def testar_cenario(nome, temp, umid_media):
+def testar_cenario(nome, temp, umid_solo):
     print(f"\n🧪 TESTE: {nome}")
-    print(f"   Simulando média dos 3 sensores: {umid_media}%")
+    print(f"   Simulando temperatura: {temp}°C")
+    print(f"   Simulando umidade do solo: {umid_solo}%")
     
     dados = {
         "temperatura_celsius": temp,
-        "umidade_solo": umid_media 
+        "umidade_solo": umid_solo
     }
     
     try:
@@ -19,7 +20,6 @@ def testar_cenario(nome, temp, umid_media):
         if response.status_code == 200:
             resultado = response.json()
             estado = resultado['estado_atual']
-            
             
             print("✅ RESPOSTA DA NUVEM:")
             print(f"   --> Irrigação: {estado['nivel_irrigacao']:.1f}%")
@@ -42,8 +42,6 @@ if __name__ == "__main__":
     print("🌍 TESTE DE INTEGRAÇÃO REMOTA - SMARTGROW")
     print("   Conectando a: " + url)
     
-    # Cenário 1: Solo Seco (Média dos 3 sensores deu baixa)
-    testar_cenario("Solo Seco e Quente", temp=30.0, umid_media=20.0)
-    
-    # Cenário 2: Solo Ideal (Média dos 3 sensores deu boa)
-    testar_cenario("Solo Ideal e Agradável", temp=22.0, umid_media=50.0)
+    # Cenário ESP32 (T:21.4 H:92.1 S:27.0)
+    # Ignorando umidade do ar (H) pois não é enviada para a API
+    testar_cenario("Cenário ESP32 Atual", temp=21.4, umid_solo=27.0)
