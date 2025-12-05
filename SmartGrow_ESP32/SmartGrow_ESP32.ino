@@ -1,15 +1,10 @@
 /*
- * SmartGrow ESP32 - Código Final v10.0 (Ventilação Manual Full ON)
- * * --- LÓGICA ATUALIZADA ---
- * 1. LUZ:
- * - Auto: ACESA DIRETO (Regra do cliente).
- * - Manual: Obedece controle manual.
- * * 2. IRRIGAÇÃO:
- * - Auto: Lógica Fuzzy (Tempo variável).
- * - Manual: Pulso de segurança (5 segundos) ao ativar.
- * * 3. VENTILAÇÃO (NOVO):
- * - Auto: Lógica Fuzzy (Tempo proporcional à temperatura).
- * - Manual: Se ativado, fica LIGADA O TEMPO TODO (100% on).
+ * SmartGrow ESP32 - Código Final v15.0 (Envio Completo)
+ * -------------------------------------------------------------------
+ * ATUALIZAÇÃO v15:
+ * - Agora envia a 'distancia_cm' para a API.
+ * - Isso permite que o Frontend crie alertas de nível baixo.
+ * -------------------------------------------------------------------
  */
 
 #include <WiFi.h>
@@ -17,12 +12,10 @@
 #include <ArduinoJson.h>
 #include <DHT.h>
 
-// --- Configurações de Rede ---
 const char* ssid = "WLL-Inatel";
 const char* password = "inatelsemfio";
 const char* api_url = "https://smartgrow-ajtn.onrender.com";
 
-// --- Pinagem ---
 #define DHT_PIN 23
 #define DHT_TYPE DHT22
 #define SOIL_PIN_1 34
@@ -30,18 +23,18 @@ const char* api_url = "https://smartgrow-ajtn.onrender.com";
 #define ULTRASONIC_TRIG_PIN 5
 #define ULTRASONIC_ECHO_PIN 18
 
-#define PUMP_RELAY_1 26
-#define PUMP_RELAY_2 25
+// PINOS CORRETOS (Sem conflito WiFi)
+#define PUMP_RELAY_1 33
+#define PUMP_RELAY_2 32
 #define LIGHT_RELAY_PIN 13
 #define FAN_RELAY_PIN 2
 
-// --- Controles de Tempo ---
-const unsigned long CONTROL_CYCLE_MS = 60000; // Ciclo Total: 1 minuto
-const unsigned long PUMP_WINDOW_MS = 10000;   // Janela de Atuação da Bomba (Auto): 10s
+const unsigned long CONTROL_CYCLE_MS = 60000; 
+const unsigned long PUMP_WINDOW_MS = 10000;   
 
 unsigned long cycleStartTime = 0;
+unsigned long manualIrrigationStart = 0;
 
-// --- Globais ---
 DHT dht(DHT_PIN, DHT_TYPE);
 unsigned long lastSensorRead = 0;
 unsigned long lastApiCall = 0;
@@ -52,18 +45,16 @@ const unsigned long API_INTERVAL = 2000;
 float temperatura = 0.0;
 float umidade_ar = 0.0;
 float umidade_solo = 0.0;
+float distancia_ultrassonico = 0.0;
 
-// Variáveis de Controle vindas da API
 float nivel_irrigacao = 0.0;
 float velocidade_ventilacao = 0.0;
 float nivel_iluminacao = 0.0;
 
-// Variáveis de Modo Automático
 bool modo_auto_luz = false; 
 bool modo_auto_irrigacao = false; 
-bool modo_auto_ventilacao = false; // NOVA VARIÁVEL PARA O VENTILADOR
-
-// --- Funções de Leitura ---
+bool modo_auto_ventilacao = false;
+bool lastPumpStatePrint = false; 
 
 float lerTemperatura() {
   float temp = dht.readTemperature();
@@ -85,10 +76,21 @@ float lerUmidadeSolo() {
   return constrain(umidade, 0, 100);
 }
 
-// --- Comunicação ---
+float lerNivelReservatorio() {
+    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(ULTRASONIC_TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
+    long duration = pulseIn(ULTRASONIC_ECHO_PIN, HIGH);
+    return duration * 0.034 / 2;
+}
 
 void enviarDadosParaAPI() {
-  if (WiFi.status() != WL_CONNECTED) return;
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Erro: WiFi desconectado!");
+    return;
+  }
   
   HTTPClient http;
   http.begin(String(api_url) + "/leituras");
@@ -98,6 +100,9 @@ void enviarDadosParaAPI() {
   doc["temperatura_celsius"] = temperatura;
   doc["umidade_solo"] = umidade_solo;
   
+  // --- MUDANÇA AQUI: Enviando a distância para a API ---
+  doc["distancia_cm"] = distancia_ultrassonico; 
+  
   String jsonString;
   serializeJson(doc, jsonString);
   
@@ -105,58 +110,71 @@ void enviarDadosParaAPI() {
   
   if (httpCode > 0) {
     String response = http.getString();
-    DynamicJsonDocument responseDoc(1024);
-    deserializeJson(responseDoc, response);
     
-    // 1. Ler os níveis (Atuadores)
-    if (responseDoc.containsKey("estado_atual")) {
-      nivel_irrigacao = responseDoc["estado_atual"]["nivel_irrigacao"];
-      velocidade_ventilacao = responseDoc["estado_atual"]["velocidade_ventilacao"];
-      nivel_iluminacao = responseDoc["estado_atual"]["nivel_iluminacao"];
-    }
+    DynamicJsonDocument responseDoc(1024);
+    DeserializationError error = deserializeJson(responseDoc, response);
 
-    // 2. Ler os MODOS AUTOMÁTICOS
+    if (error) {
+      Serial.print("Erro JSON: ");
+      Serial.println(error.c_str());
+      return;
+    }
+    
     if (responseDoc.containsKey("modo_automatico")) {
         modo_auto_luz = responseDoc["modo_automatico"]["iluminacao"];
         modo_auto_irrigacao = responseDoc["modo_automatico"]["irrigacao"];
-        
-        // Verifica se existe a chave de ventilação, senão assume padrão (false ou true conforme preferir)
         if (responseDoc["modo_automatico"].containsKey("ventilacao")) {
             modo_auto_ventilacao = responseDoc["modo_automatico"]["ventilacao"];
         }
     }
+
+    if (responseDoc.containsKey("estado_atual")) {
+      float novo_nivel_irrigacao = responseDoc["estado_atual"]["nivel_irrigacao"];
+      
+      if (!modo_auto_irrigacao && novo_nivel_irrigacao >= 99.0 && nivel_irrigacao < 99.0) {
+          manualIrrigationStart = millis(); 
+          Serial.println(">>> START MANUAL (Timer Isolado) <<<");
+      }
+
+      nivel_irrigacao = novo_nivel_irrigacao;
+      velocidade_ventilacao = responseDoc["estado_atual"]["velocidade_ventilacao"];
+      nivel_iluminacao = responseDoc["estado_atual"]["nivel_iluminacao"];
+    }
+
+    Serial.printf("API -> Irrig: %.0f%% | Vent: %.0f%% | Luz: %.0f%%\n", 
+                  nivel_irrigacao, velocidade_ventilacao, nivel_iluminacao);
   }
   http.end();
 }
-
-// --- Controle de Atuadores ---
 
 void gerenciarAtuadores(unsigned long currentTime) {
     if (currentTime - cycleStartTime >= CONTROL_CYCLE_MS) {
         cycleStartTime = currentTime;
     }
-    unsigned long elapsedTime = currentTime - cycleStartTime;
+    unsigned long elapsedTimeGlobal = currentTime - cycleStartTime;
 
-    // ---------------------------------------------------------
-    // 1. LÓGICA DA BOMBA (IRRIGAÇÃO)
-    // ---------------------------------------------------------
-    unsigned long pumpOnDuration = 0;
-
+    // 1. BOMBA
+    bool pumpState = false; 
     if (modo_auto_irrigacao == true) {
-        // AUTO: Usa janela Fuzzy
-        pumpOnDuration = (PUMP_WINDOW_MS * (nivel_irrigacao / 100.0));
-    } 
-    else {
-        // MANUAL: Pulso Fixo de Segurança (5s)
+        unsigned long pumpOnDuration = 0;
+        if (nivel_irrigacao > 30.0) { 
+            pumpOnDuration = (PUMP_WINDOW_MS * (nivel_irrigacao / 100.0));
+        }
+        if (elapsedTimeGlobal < pumpOnDuration) pumpState = true;
+    } else {
         if (nivel_irrigacao >= 99.0) {
-            pumpOnDuration = 5000; 
-        } else {
-            pumpOnDuration = 0;
+            unsigned long timeSinceManual = currentTime - manualIrrigationStart;
+            if ((timeSinceManual % 60000) < 5000) pumpState = true;
         }
     }
 
-    // Aplicação Física Bomba
-    if (elapsedTime < pumpOnDuration) {
+    if (pumpState != lastPumpStatePrint) {
+        if (pumpState) Serial.println("!!! ATIVANDO BOMBAS (Pinos 33 e 32) !!!");
+        else Serial.println("... Desativando Bombas ...");
+        lastPumpStatePrint = pumpState;
+    }
+
+    if (pumpState) {
         digitalWrite(PUMP_RELAY_1, HIGH);
         digitalWrite(PUMP_RELAY_2, HIGH);
     } else {
@@ -164,71 +182,43 @@ void gerenciarAtuadores(unsigned long currentTime) {
         digitalWrite(PUMP_RELAY_2, LOW);
     }
 
-    // ---------------------------------------------------------
-    // 2. LÓGICA DA VENTILAÇÃO (NOVA IMPLEMENTAÇÃO)
-    // ---------------------------------------------------------
+    // 2. VENTILAÇÃO
     unsigned long fanOnDuration = 0;
-
     if (modo_auto_ventilacao == true) {
-        // AUTO: Proporcional à temperatura (Lógica Fuzzy padrão)
-        // Ex: Se ventilação é 50%, liga por 30s dentro de 1 minuto
-        fanOnDuration = (CONTROL_CYCLE_MS * (velocidade_ventilacao / 100.0));
-    }
-    else {
-        // MANUAL: "Ligada o tempo todo" se o botão estiver ON
-        if (velocidade_ventilacao >= 99.0) {
-            fanOnDuration = CONTROL_CYCLE_MS + 1000; // Define um tempo maior que o ciclo para garantir ON constante
-        } else {
-            fanOnDuration = 0;
+        if (velocidade_ventilacao > 30.0) {
+            fanOnDuration = (CONTROL_CYCLE_MS * (velocidade_ventilacao / 100.0));
         }
-    }
-
-    // Aplicação Física Ventilador
-    if (elapsedTime < fanOnDuration) {
-        digitalWrite(FAN_RELAY_PIN, HIGH);
     } else {
-        digitalWrite(FAN_RELAY_PIN, LOW);
+        if (velocidade_ventilacao >= 99.0) fanOnDuration = CONTROL_CYCLE_MS + 1000; 
     }
+    if (elapsedTimeGlobal < fanOnDuration) digitalWrite(FAN_RELAY_PIN, HIGH);
+    else digitalWrite(FAN_RELAY_PIN, LOW);
 
-    // ---------------------------------------------------------
-    // 3. LÓGICA DA LUZ
-    // ---------------------------------------------------------
+    // 3. LUZ
     unsigned long lightOnDuration = (CONTROL_CYCLE_MS * (nivel_iluminacao / 100.0));
-
-    if (modo_auto_luz == true) {
-        // Auto: LUZ SEMPRE ACESA
-        digitalWrite(LIGHT_RELAY_PIN, HIGH);
-    } 
+    if (modo_auto_luz == true) digitalWrite(LIGHT_RELAY_PIN, HIGH);
     else {
-        // Manual: Obedece controle
-        if (elapsedTime < lightOnDuration) {
-            digitalWrite(LIGHT_RELAY_PIN, HIGH);
-        } else {
-            digitalWrite(LIGHT_RELAY_PIN, LOW);
-        }
+        if (elapsedTimeGlobal < lightOnDuration) digitalWrite(LIGHT_RELAY_PIN, HIGH);
+        else digitalWrite(LIGHT_RELAY_PIN, LOW);
     }
 }
-
-// --- Setup ---
 
 void setup() {
   Serial.begin(115200);
   delay(1000);
   
+  Serial.println("\n--- SMARTGROW V15 (Full Data) ---");
+
   pinMode(PUMP_RELAY_1, OUTPUT);
   pinMode(PUMP_RELAY_2, OUTPUT);
   pinMode(FAN_RELAY_PIN, OUTPUT);
   pinMode(LIGHT_RELAY_PIN, OUTPUT);
-  
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
   
-  // Estado Inicial
   digitalWrite(PUMP_RELAY_1, LOW);
   digitalWrite(PUMP_RELAY_2, LOW);
   digitalWrite(FAN_RELAY_PIN, LOW);
-  
-  // Luz inicia ligada
   digitalWrite(LIGHT_RELAY_PIN, HIGH); 
   
   dht.begin();
@@ -236,31 +226,32 @@ void setup() {
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
+    Serial.print(".");
   }
+  Serial.println("\nWiFi Conectado!");
   
   cycleStartTime = millis();
+  manualIrrigationStart = millis(); 
 }
-
-// --- Loop ---
 
 void loop() {
   unsigned long currentTime = millis();
   
-  // Sensores (5s)
   if (currentTime - lastSensorRead >= SENSOR_INTERVAL) {
     temperatura = lerTemperatura();
     umidade_ar = lerUmidadeAr();
     umidade_solo = lerUmidadeSolo();
+    distancia_ultrassonico = lerNivelReservatorio();
+    
+    Serial.printf("[Sensor] U.Solo: %.0f%% | Reserv: %.1f cm\n", umidade_solo, distancia_ultrassonico);
     lastSensorRead = currentTime;
   }
   
-  // API (2s)
   if (currentTime - lastApiCall >= API_INTERVAL) {
     enviarDadosParaAPI();
     lastApiCall = currentTime;
   }
   
-  // Atuadores
   gerenciarAtuadores(currentTime);
   
   delay(10);
