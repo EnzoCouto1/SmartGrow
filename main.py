@@ -169,10 +169,17 @@ def obter_configuracao_automacao():
 
 @app.post("/configuracao/automacao")
 def definir_automacao(config: ConfigAutomacao):
-    with lock:
-        if config.sistema in modo_automatico:
-            modo_automatico[config.sistema] = config.ativo
-            return {"status": "sucesso", "mensagem": f"Automação de {config.sistema} definida para {config.ativo}"}
+    if config.sistema in modo_automatico:
+        modo_automatico[config.sistema] = config.ativo
+        
+        # --- CORREÇÃO NOVA: Se desativar o automático, ZERA o estado ---
+        if not config.ativo:
+            if config.sistema == "irrigacao":
+                estado_sistema["nivel_irrigacao"] = 0.0
+            elif config.sistema == "iluminacao":
+                estado_sistema["nivel_iluminacao"] = 0.0
+        
+        return {"status": "sucesso", "mensagem": f"Automação de {config.sistema} definida para {config.ativo}"}
     raise HTTPException(status_code=400, detail="Sistema inválido")
 
 @app.post("/controle/manual")
