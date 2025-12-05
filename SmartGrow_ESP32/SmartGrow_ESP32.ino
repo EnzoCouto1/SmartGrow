@@ -1,3 +1,17 @@
+/*
+ * SmartGrow ESP32 - Código Final v10.0 (Ventilação Manual Full ON)
+ * * --- LÓGICA ATUALIZADA ---
+ * 1. LUZ:
+ * - Auto: ACESA DIRETO (Regra do cliente).
+ * - Manual: Obedece controle manual.
+ * * 2. IRRIGAÇÃO:
+ * - Auto: Lógica Fuzzy (Tempo variável).
+ * - Manual: Pulso de segurança (5 segundos) ao ativar.
+ * * 3. VENTILAÇÃO (NOVO):
+ * - Auto: Lógica Fuzzy (Tempo proporcional à temperatura).
+ * - Manual: Se ativado, fica LIGADA O TEMPO TODO (100% on).
+ */
+
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -21,31 +35,33 @@ const char* api_url = "https://smartgrow-ajtn.onrender.com";
 #define LIGHT_RELAY_PIN 13
 #define FAN_RELAY_PIN 2
 
-// --- Configurações de Tempo ---
+// --- Controles de Tempo ---
 const unsigned long CONTROL_CYCLE_MS = 60000; // Ciclo Total: 1 minuto
-const unsigned long PUMP_WINDOW_MS = 10000;   // Janela de Atuação da Bomba: 10 segundos
+const unsigned long PUMP_WINDOW_MS = 10000;   // Janela de Atuação da Bomba (Auto): 10s
 
 unsigned long cycleStartTime = 0;
-unsigned long lastLightToggle = 0; 
-
-bool pumpState = false;
-bool fanState = false;
-bool lightState = false;
 
 // --- Globais ---
 DHT dht(DHT_PIN, DHT_TYPE);
 unsigned long lastSensorRead = 0;
 unsigned long lastApiCall = 0;
+
 const unsigned long SENSOR_INTERVAL = 5000; 
-const unsigned long API_INTERVAL = 30000;   
+const unsigned long API_INTERVAL = 2000;   
 
 float temperatura = 0.0;
 float umidade_ar = 0.0;
 float umidade_solo = 0.0;
 
+// Variáveis de Controle vindas da API
 float nivel_irrigacao = 0.0;
 float velocidade_ventilacao = 0.0;
 float nivel_iluminacao = 0.0;
+
+// Variáveis de Modo Automático
+bool modo_auto_luz = false; 
+bool modo_auto_irrigacao = false; 
+bool modo_auto_ventilacao = false; // NOVA VARIÁVEL PARA O VENTILADOR
 
 // --- Funções de Leitura ---
 
@@ -92,53 +108,54 @@ void enviarDadosParaAPI() {
     DynamicJsonDocument responseDoc(1024);
     deserializeJson(responseDoc, response);
     
+    // 1. Ler os níveis (Atuadores)
     if (responseDoc.containsKey("estado_atual")) {
       nivel_irrigacao = responseDoc["estado_atual"]["nivel_irrigacao"];
       velocidade_ventilacao = responseDoc["estado_atual"]["velocidade_ventilacao"];
       nivel_iluminacao = responseDoc["estado_atual"]["nivel_iluminacao"];
     }
+
+    // 2. Ler os MODOS AUTOMÁTICOS
+    if (responseDoc.containsKey("modo_automatico")) {
+        modo_auto_luz = responseDoc["modo_automatico"]["iluminacao"];
+        modo_auto_irrigacao = responseDoc["modo_automatico"]["irrigacao"];
+        
+        // Verifica se existe a chave de ventilação, senão assume padrão (false ou true conforme preferir)
+        if (responseDoc["modo_automatico"].containsKey("ventilacao")) {
+            modo_auto_ventilacao = responseDoc["modo_automatico"]["ventilacao"];
+        }
+    }
   }
   http.end();
 }
 
-// --- Controle de Atuadores (Lógica Atualizada) ---
+// --- Controle de Atuadores ---
 
 void gerenciarAtuadores(unsigned long currentTime) {
-    // 1. Reinicia o ciclo a cada 1 minuto (60 segundos)
     if (currentTime - cycleStartTime >= CONTROL_CYCLE_MS) {
         cycleStartTime = currentTime;
     }
     unsigned long elapsedTime = currentTime - cycleStartTime;
 
-    // --- LÓGICA DA BOMBA (Janela de 10s) ---
+    // ---------------------------------------------------------
+    // 1. LÓGICA DA BOMBA (IRRIGAÇÃO)
+    // ---------------------------------------------------------
     unsigned long pumpOnDuration = 0;
 
-    if (nivel_irrigacao >= 99.0) {
-        // MANUAL: Liga por 5 segundos fixos (como pedido anteriormente)
-        pumpOnDuration = 5000; 
-    } 
-    else if (nivel_irrigacao > 30.0) {
-        // FUZZY: Calcula a porcentagem DENTRO dos 10 segundos
-        // Ex: 35% -> 0.35 * 10000 = 3500ms (3.5 segundos)
+    if (modo_auto_irrigacao == true) {
+        // AUTO: Usa janela Fuzzy
         pumpOnDuration = (PUMP_WINDOW_MS * (nivel_irrigacao / 100.0));
+    } 
+    else {
+        // MANUAL: Pulso Fixo de Segurança (5s)
+        if (nivel_irrigacao >= 99.0) {
+            pumpOnDuration = 5000; 
+        } else {
+            pumpOnDuration = 0;
+        }
     }
-    // Se for < 30% (Zona Morta), pumpOnDuration fica 0.
 
-    // --- LÓGICA DA VENTOINHA (Ciclo Completo de 1 min) ---
-    unsigned long fanOnDuration = 0;
-    if (velocidade_ventilacao > 30.0) {
-        // A ventoinha usa o ciclo cheio (60s) para ventilar melhor
-        fanOnDuration = (CONTROL_CYCLE_MS * (velocidade_ventilacao / 100.0));
-    }
-
-    // --- LÓGICA DA ILUMINAÇÃO (Time Based) ---
-    // Se o backend mandar ligar, liga pelo ciclo todo
-    unsigned long lightOnDuration = (CONTROL_CYCLE_MS * (nivel_iluminacao / 100.0));
-
-
-    // --- EXECUÇÃO FÍSICA ---
-
-    // Bombas
+    // Aplicação Física Bomba
     if (elapsedTime < pumpOnDuration) {
         digitalWrite(PUMP_RELAY_1, HIGH);
         digitalWrite(PUMP_RELAY_2, HIGH);
@@ -147,18 +164,48 @@ void gerenciarAtuadores(unsigned long currentTime) {
         digitalWrite(PUMP_RELAY_2, LOW);
     }
 
-    // Ventoinha
+    // ---------------------------------------------------------
+    // 2. LÓGICA DA VENTILAÇÃO (NOVA IMPLEMENTAÇÃO)
+    // ---------------------------------------------------------
+    unsigned long fanOnDuration = 0;
+
+    if (modo_auto_ventilacao == true) {
+        // AUTO: Proporcional à temperatura (Lógica Fuzzy padrão)
+        // Ex: Se ventilação é 50%, liga por 30s dentro de 1 minuto
+        fanOnDuration = (CONTROL_CYCLE_MS * (velocidade_ventilacao / 100.0));
+    }
+    else {
+        // MANUAL: "Ligada o tempo todo" se o botão estiver ON
+        if (velocidade_ventilacao >= 99.0) {
+            fanOnDuration = CONTROL_CYCLE_MS + 1000; // Define um tempo maior que o ciclo para garantir ON constante
+        } else {
+            fanOnDuration = 0;
+        }
+    }
+
+    // Aplicação Física Ventilador
     if (elapsedTime < fanOnDuration) {
         digitalWrite(FAN_RELAY_PIN, HIGH);
     } else {
         digitalWrite(FAN_RELAY_PIN, LOW);
     }
 
-    // Iluminação (Controlada pelo Backend)
-    if (elapsedTime < lightOnDuration) {
+    // ---------------------------------------------------------
+    // 3. LÓGICA DA LUZ
+    // ---------------------------------------------------------
+    unsigned long lightOnDuration = (CONTROL_CYCLE_MS * (nivel_iluminacao / 100.0));
+
+    if (modo_auto_luz == true) {
+        // Auto: LUZ SEMPRE ACESA
         digitalWrite(LIGHT_RELAY_PIN, HIGH);
-    } else {
-        digitalWrite(LIGHT_RELAY_PIN, LOW);
+    } 
+    else {
+        // Manual: Obedece controle
+        if (elapsedTime < lightOnDuration) {
+            digitalWrite(LIGHT_RELAY_PIN, HIGH);
+        } else {
+            digitalWrite(LIGHT_RELAY_PIN, LOW);
+        }
     }
 }
 
@@ -176,10 +223,13 @@ void setup() {
   pinMode(ULTRASONIC_TRIG_PIN, OUTPUT);
   pinMode(ULTRASONIC_ECHO_PIN, INPUT);
   
+  // Estado Inicial
   digitalWrite(PUMP_RELAY_1, LOW);
   digitalWrite(PUMP_RELAY_2, LOW);
   digitalWrite(FAN_RELAY_PIN, LOW);
-  digitalWrite(LIGHT_RELAY_PIN, LOW);
+  
+  // Luz inicia ligada
+  digitalWrite(LIGHT_RELAY_PIN, HIGH); 
   
   dht.begin();
   
@@ -189,7 +239,6 @@ void setup() {
   }
   
   cycleStartTime = millis();
-  lastLightToggle = millis();
 }
 
 // --- Loop ---
@@ -197,7 +246,7 @@ void setup() {
 void loop() {
   unsigned long currentTime = millis();
   
-  // 1. Sensores
+  // Sensores (5s)
   if (currentTime - lastSensorRead >= SENSOR_INTERVAL) {
     temperatura = lerTemperatura();
     umidade_ar = lerUmidadeAr();
@@ -205,22 +254,14 @@ void loop() {
     lastSensorRead = currentTime;
   }
   
-  // 2. API
+  // API (2s)
   if (currentTime - lastApiCall >= API_INTERVAL) {
     enviarDadosParaAPI();
     lastApiCall = currentTime;
   }
   
-  // 3. Atuadores (Lógica Fuzzy/Temporal)
+  // Atuadores
   gerenciarAtuadores(currentTime);
-
-  // 4. Iluminação (Piscar Manual para Teste - Opcional, pode remover se quiser só o backend)
-  /* if (currentTime - lastLightToggle >= 4000) {
-      lightState = !lightState;
-      digitalWrite(LIGHT_RELAY_PIN, lightState ? HIGH : LOW);
-      lastLightToggle = currentTime;
-  }
-  */
   
   delay(10);
 }

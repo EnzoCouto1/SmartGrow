@@ -5,52 +5,44 @@ import sqlite3
 import datetime
 import threading
 
-# Importa as funções do cérebro fuzzy (agora sem iluminação fuzzy)
+# Importa as funções do cérebro fuzzy
 from fuzzy_logic import calcular_nivel_irrigacao, calcular_velocidade_ventilacao
 
 DATABASE_NAME = "leituras.db"
 
 # --- THREAD LOCK ---
-# Adiciona um Lock para proteger o acesso às variáveis globais
 lock = threading.Lock()
 
 # --- CONFIGURAÇÕES GERAIS ---
-# Horário para ligar/desligar a luz (Sistema Time-Based)
 HORA_LIGAR_LUZES = 18  # 18:00
 HORA_DESLIGAR_LUZES = 6 # 06:00
 
 # --- MODELOS DE DADOS ---
-
-# 1. Leitura do Sensor (Sem luminosidade, pois é por horário)
 class LeituraSensor(BaseModel):
     temperatura_celsius: float
     umidade_solo: float
 
-# 2. Configuração de Automação (Frontend)
 class ConfigAutomacao(BaseModel):
-    sistema: str # "irrigacao" ou "iluminacao"
+    sistema: str # "irrigacao", "iluminacao" ou "ventilacao"
     ativo: bool
 
-# 3. Comando Manual (Frontend)
 class ComandoManual(BaseModel):
-    sistema: str # "irrigacao" ou "iluminacao"
+    sistema: str # "irrigacao", "iluminacao" ou "ventilacao"
     ligar: bool
 
 # --- CONFIGURAÇÃO DA API ---
 
-print("\n\n--- ESTOU CARREGANDO O ARQUIVO CERTO (TIME-BASED)! ---\n\n")
+print("\n\n--- CARREGANDO API COM SUPORTE A VENTILAÇÃO! ---\n\n")
 
 app = FastAPI(
     title="API da Estufa Inteligente",
-    version="2.0.1" # Versão atualizada com correção de race condition
+    version="3.0.0" 
 )
 
-# Criação automática do Banco de Dados no startup
 @app.on_event("startup")
 def startup_db():
     conn = sqlite3.connect(DATABASE_NAME)
     cursor = conn.cursor()
-    # Tabela atualizada (sem coluna luminosidade)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS leituras (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +55,6 @@ def startup_db():
     conn.close()
     print("--- BANCO DE DADOS VERIFICADO ---")
 
-# Configuração de CORS
 origins = [
     "http://localhost:5173",
     "http://localhost:3000",
@@ -87,27 +78,31 @@ estado_sistema = {
     "nivel_iluminacao": 0.0
 }
 
+# --- CORREÇÃO 1: Adicionando 'ventilacao' aqui ---
 modo_automatico = {
     "irrigacao": True,
-    "iluminacao": True
+    "iluminacao": True,
+    "ventilacao": True 
 }
 
+# --- CORREÇÃO 2: Adicionando 'ventilacao' aqui ---
 controles_manuais = {
     "irrigacao": False,
-    "iluminacao": False
+    "iluminacao": False,
+    "ventilacao": False
 }
 
 # --- ENDPOINTS ---
 
 @app.get("/")
 def read_root():
-    return {"status": "ok", "message": "API da Estufa Inteligente Online"}
+    return {"status": "ok", "message": "API da Estufa Inteligente Online v3"}
 
 @app.post("/leituras")
 def registrar_leitura(leitura: LeituraSensor):
     global estado_sistema
 
-    # --- 1. Lógica Fuzzy (Irrigação e Ventilação) ---
+    # 1. Cálculos
     nivel_irrigacao_calculado = calcular_nivel_irrigacao(
         leitura.temperatura_celsius,
         leitura.umidade_solo
@@ -117,21 +112,21 @@ def registrar_leitura(leitura: LeituraSensor):
         leitura.temperatura_celsius
     )
 
-    # --- 2. Lógica de Iluminação (Por Horário) ---
     hora_atual = datetime.datetime.now().hour
     if hora_atual >= HORA_LIGAR_LUZES or hora_atual < HORA_DESLIGAR_LUZES:
         nivel_iluminacao_calculado = 100.0
     else:
         nivel_iluminacao_calculado = 0.0
 
-    # --- 3. Atualização do Estado (Thread-Safe) ---
+    # 2. Atualização do Estado
     with lock:
         # Irrigação
         if modo_automatico["irrigacao"]:
             estado_sistema["nivel_irrigacao"] = nivel_irrigacao_calculado
 
-        # Ventilação (Sempre Auto)
-        estado_sistema["velocidade_ventilacao"] = velocidade_ventilacao_calculada
+        # --- CORREÇÃO 3: Ventilação agora respeita o automático ---
+        if modo_automatico["ventilacao"]:
+            estado_sistema["velocidade_ventilacao"] = velocidade_ventilacao_calculada
 
         # Iluminação
         if modo_automatico["iluminacao"]:
@@ -140,11 +135,10 @@ def registrar_leitura(leitura: LeituraSensor):
         print(f"[{datetime.datetime.now()}] Leitura: T={leitura.temperatura_celsius}°C, U={leitura.umidade_solo}%")
         print(f"  -> Estado: Irr={estado_sistema['nivel_irrigacao']:.1f}%, Ven={estado_sistema['velocidade_ventilacao']:.1f}%, Luz={estado_sistema['nivel_iluminacao']:.1f}%")
 
-        # Copia o estado atual para retornar fora do lock
         estado_para_retorno = estado_sistema.copy()
         modo_para_retorno = modo_automatico.copy()
 
-    # --- 4. Salvar no Banco ---
+    # 3. Salvar no Banco
     try:
         conn = sqlite3.connect(DATABASE_NAME)
         cursor = conn.cursor()
@@ -169,24 +163,29 @@ def obter_configuracao_automacao():
 
 @app.post("/configuracao/automacao")
 def definir_automacao(config: ConfigAutomacao):
+    # Agora 'ventilacao' vai passar aqui porque adicionamos no dicionário lá em cima
     if config.sistema in modo_automatico:
-        modo_automatico[config.sistema] = config.ativo
-        
-        # --- CORREÇÃO NOVA: Se desativar o automático, ZERA o estado ---
-        if not config.ativo:
-            if config.sistema == "irrigacao":
-                estado_sistema["nivel_irrigacao"] = 0.0
-            elif config.sistema == "iluminacao":
-                estado_sistema["nivel_iluminacao"] = 0.0
-        
-        return {"status": "sucesso", "mensagem": f"Automação de {config.sistema} definida para {config.ativo}"}
+        with lock:
+            modo_automatico[config.sistema] = config.ativo
+            
+            # Se desativar, zera o valor
+            if not config.ativo:
+                if config.sistema == "irrigacao":
+                    estado_sistema["nivel_irrigacao"] = 0.0
+                elif config.sistema == "iluminacao":
+                    estado_sistema["nivel_iluminacao"] = 0.0
+                elif config.sistema == "ventilacao": # Adicionado
+                    estado_sistema["velocidade_ventilacao"] = 0.0
+            
+            return {"status": "sucesso", "mensagem": f"Automação de {config.sistema} definida para {config.ativo}"}
+            
     raise HTTPException(status_code=400, detail="Sistema inválido")
 
 @app.post("/controle/manual")
 def controle_manual(comando: ComandoManual):
     with lock:
         if modo_automatico.get(comando.sistema):
-            raise HTTPException(status_code=400, detail="Erro: Desative a automação antes de controlar manualmente.")
+            raise HTTPException(status_code=400, detail=f"Erro: Desative a automação de {comando.sistema} antes de controlar manualmente.")
 
         if comando.sistema in controles_manuais:
             controles_manuais[comando.sistema] = comando.ligar
@@ -196,6 +195,8 @@ def controle_manual(comando: ComandoManual):
                 estado_sistema["nivel_irrigacao"] = valor_manual
             elif comando.sistema == "iluminacao":
                 estado_sistema["nivel_iluminacao"] = valor_manual
+            elif comando.sistema == "ventilacao": # Adicionado para aceitar comando manual
+                estado_sistema["velocidade_ventilacao"] = valor_manual
 
             return {"status": "sucesso", "mensagem": f"{comando.sistema} manual definido para {valor_manual}%"}
 
@@ -215,7 +216,6 @@ def obter_leituras():
         cursor.execute("SELECT id, temperatura, umidade, horario FROM leituras ORDER BY horario DESC")
         leituras = cursor.fetchall()
         conn.close()
-        # Retorna uma cópia para evitar problemas de concorrência se os dados forem manipulados
         return [dict(row) for row in leituras]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro ao ler o banco de dados: {e}")
